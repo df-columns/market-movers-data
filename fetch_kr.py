@@ -4,7 +4,7 @@ import requests, urllib3, warnings, json, re, os
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import firebase_admin
 from firebase_admin import credentials, db as firebase_db
@@ -140,8 +140,11 @@ prices_data = [
     [price_map.get(code, {}).get(date, 0) for code, _, __ in all_stocks]
     for date in valid_dates
 ]
+KST = timezone(timedelta(hours=9))
+collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
+
 firebase_db.reference('/v1/kr').set({
-    'updated': valid_dates[0], 'stocks': stocks_data,
-    'dates': valid_dates, 'prices': prices_data
+    'updated': valid_dates[0], 'collected_at': collected_at,
+    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data
 })
 print(f'[KR] 완료! ({time.time()-t0:.0f}초)')
