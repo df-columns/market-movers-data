@@ -2,3 +2,6 @@ requests
 beautifulsoup4
 firebase-admin
 urllib3
+pandas
+yfinance
+lxml
