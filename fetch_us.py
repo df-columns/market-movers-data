@@ -4,7 +4,7 @@ import warnings, json, os, time
 import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import firebase_admin
 from firebase_admin import credentials, db as firebase_db
 
@@ -159,10 +159,11 @@ for date in valid_dates:
 print('\n[US] Firebase 업로드 중...')
 stocks_data = [{'c': t, 'n': name, 'm': int(mc)} for t, name, mc in all_stocks]
 
+KST = timezone(timedelta(hours=9))
+collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
+
 firebase_db.reference('/v1/us').set({
-    'updated': valid_dates[0],
-    'stocks': stocks_data,
-    'dates': valid_dates,
-    'prices': prices_data
+    'updated': valid_dates[0], 'collected_at': collected_at,
+    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data
 })
 print(f'[US] 완료! ({time.time()-t0:.0f}초)')
