@@ -25,30 +25,52 @@ HISTORY_DAYS = 400
 print('[US] S&P 500 종목 리스트 수집 중...')
 t0 = time.time()
 
-try:
-    tables = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-    sp500 = tables[0]
-    sym_col  = 'Symbol'   if 'Symbol'   in sp500.columns else sp500.columns[0]
-    name_col = 'Security' if 'Security' in sp500.columns else sp500.columns[1]
-    tickers = {
+def parse_wiki_table(url, sym_candidates, name_candidates):
+    """Wikipedia 테이블에서 {ticker: name} 딕셔너리 반환"""
+    tables = pd.read_html(url)
+    df = tables[0]
+    sym_col  = next((c for c in sym_candidates if c in df.columns), df.columns[0])
+    name_col = next((c for c in name_candidates if c in df.columns), df.columns[1])
+    return {
         str(row[sym_col]).replace('.', '-'): str(row[name_col])
-        for _, row in sp500.iterrows()
+        for _, row in df.iterrows()
     }
-    print(f'  Wikipedia: {len(tickers)}종목')
+
+tickers = {}
+try:
+    sp500 = parse_wiki_table(
+        'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
+        sym_candidates  = ['Symbol', 'Ticker'],
+        name_candidates = ['Security', 'Company', 'Name']
+    )
+    tickers.update(sp500)
+    print(f'  S&P 500: {len(sp500)}종목')
 except Exception as e:
-    print(f'  [WARN] Wikipedia 파싱 실패: {e}  (백업 리스트 사용)')
+    print(f'  [WARN] S&P 500 파싱 실패: {e}')
+
+try:
+    ndx100 = parse_wiki_table(
+        'https://en.wikipedia.org/wiki/Nasdaq-100',
+        sym_candidates  = ['Ticker', 'Symbol'],
+        name_candidates = ['Company', 'Security', 'Name']
+    )
+    new_ndx = {k: v for k, v in ndx100.items() if k not in tickers}
+    tickers.update(new_ndx)
+    print(f'  NASDAQ 100: {len(ndx100)}종목 (신규 {len(new_ndx)}개 추가)')
+except Exception as e:
+    print(f'  [WARN] NASDAQ 100 파싱 실패: {e}')
+
+if not tickers:
+    print('  [WARN] Wikipedia 파싱 전부 실패 → 백업 리스트 사용')
     tickers = {
         'AAPL':'Apple Inc.','MSFT':'Microsoft Corporation','NVDA':'NVIDIA Corporation',
         'AMZN':'Amazon.com Inc.','GOOGL':'Alphabet Inc.','META':'Meta Platforms Inc.',
         'TSLA':'Tesla Inc.','BRK-B':'Berkshire Hathaway Inc.','UNH':'UnitedHealth Group',
         'JPM':'JPMorgan Chase & Co.','XOM':'Exxon Mobil Corporation','JNJ':'Johnson & Johnson',
         'V':'Visa Inc.','MA':'Mastercard Incorporated','PG':'Procter & Gamble Co.',
-        'AVGO':'Broadcom Inc.','LLY':'Eli Lilly and Company','HD':'Home Depot Inc.',
-        'MRK':'Merck & Co.','PEP':'PepsiCo Inc.','KO':'Coca-Cola Company',
-        'ABBV':'AbbVie Inc.','CVX':'Chevron Corporation','CRM':'Salesforce Inc.',
-        'BAC':'Bank of America Corp','WMT':'Walmart Inc.','COST':'Costco Wholesale',
-        'MCD':'McDonald\'s Corporation','CSCO':'Cisco Systems Inc.','ACN':'Accenture plc',
     }
+
+print(f'  합산 유니버스: {len(tickers)}종목')
 
 ticker_list = list(tickers.keys())
 
