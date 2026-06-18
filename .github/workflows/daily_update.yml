@@ -1,0 +1,24 @@
+name: Daily Market Data Update
+
+on:
+  schedule:
+    - cron: '30 7 * * 1-5'   # 평일 오후 4:30 KST (= 07:30 UTC)
+  workflow_dispatch:           # 수동 실행 버튼도 제공
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install packages
+        run: pip install -r requirements.txt
+
+      - name: Upload to Firebase
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python upload_to_firebase.py
