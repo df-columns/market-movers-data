@@ -2,8 +2,9 @@ name: Daily Market Data Update
 
 on:
   schedule:
-    - cron: '30 7 * * 1-5'   # 평일 오후 4:30 KST (= 07:30 UTC)
-  workflow_dispatch:           # 수동 실행 버튼도 제공
+    - cron: '30 22 * * 0-4'  # 7:30 AM KST Mon-Fri (= 전날 22:30 UTC)
+    - cron: '35 6 * * 1-5'   # 3:35 PM KST Mon-Fri (= 06:35 UTC)
+  workflow_dispatch:           # 수동 실행 버튼
 
 jobs:
   update:
@@ -18,7 +19,12 @@ jobs:
       - name: Install packages
         run: pip install -r requirements.txt
 
-      - name: Upload to Firebase
+      - name: Fetch KR data
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-        run: python upload_to_firebase.py
+        run: python fetch_kr.py
+
+      - name: Fetch US data
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python fetch_us.py
