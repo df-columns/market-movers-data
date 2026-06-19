@@ -2,8 +2,7 @@ name: Daily Market Data Update
 
 on:
   schedule:
-    - cron: '30 22 * * 0-4'  # 7:30 AM KST Mon-Fri (= 전날 22:30 UTC)
-    - cron: '35 6 * * 1-5'   # 3:35 PM KST Mon-Fri (= 06:35 UTC)
+    - cron: '*/5 * * * *'    # 5분마다
   workflow_dispatch:           # 수동 실행 버튼
 
 jobs:
