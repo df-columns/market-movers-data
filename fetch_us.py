@@ -27,12 +27,30 @@ t0 = time.time()
 
 # ── 1. yfinance Screener ───────────────────────────────────────────────────────
 def get_tickers_via_screener():
-    # yfinance 버전에 따라 import 경로가 다름
-    try:
-        from yfinance import EquityQuery, Screener
-    except ImportError:
-        from yfinance.screener.screener import Screener
-        from yfinance.screener.query import EquityQuery
+    # yfinance 버전에 따라 import 경로가 다름 — 순서대로 시도
+    Screener = EquityQuery = None
+    for _try in [
+        lambda: __import__('yfinance', fromlist=['Screener', 'EquityQuery']),
+        lambda: __import__('yfinance.screener', fromlist=['Screener', 'EquityQuery']),
+    ]:
+        try:
+            mod = _try()
+            Screener = getattr(mod, 'Screener', None)
+            EquityQuery = getattr(mod, 'EquityQuery', None)
+            if Screener and EquityQuery:
+                break
+        except Exception:
+            pass
+    if not Screener or not EquityQuery:
+        try:
+            import yfinance.screener.query as _q
+            import yfinance.screener.screener as _s
+            EquityQuery = getattr(_q, 'EquityQuery', None) or getattr(_q, 'Query', None)
+            Screener = getattr(_s, 'Screener', None) or getattr(_s, 'Screen', None)
+        except Exception:
+            pass
+    if not Screener or not EquityQuery:
+        raise ImportError('yfinance Screener를 찾을 수 없습니다')
 
     tickers, mktcaps = {}, {}
     qry = EquityQuery('AND', [
