@@ -57,8 +57,13 @@ def get_tickers_via_screener():
 
 def get_tickers_via_wikipedia():
     """Wikipedia S&P 500 + NASDAQ 100 파싱 (가장 큰 테이블 우선)"""
+    import requests as _req
+    _headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
     def parse(url, sym_candidates, name_candidates):
-        tables = pd.read_html(url, flavor='lxml')
+        resp = _req.get(url, headers=_headers, timeout=15)
+        resp.raise_for_status()
+        tables = pd.read_html(resp.text, flavor='lxml')
         for df in sorted(tables, key=len, reverse=True):
             sym_col  = next((c for c in sym_candidates if c in df.columns), None)
             name_col = next((c for c in name_candidates if c in df.columns), None)
