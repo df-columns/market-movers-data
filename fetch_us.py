@@ -1,6 +1,7 @@
 # fetch_us.py  ─  미국 주식 데이터 수집 → Firebase /v1/us
 
 import warnings, json, os, time
+import requests
 import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,67 +21,80 @@ except ValueError:
     pass
 
 HISTORY_DAYS = 400
-USD_10B = 10_000_000_000
+USD_20B = 20_000_000_000
 
 print('[US] 종목 리스트 수집 중...')
 t0 = time.time()
 
-# ── 1. yfinance Screener ───────────────────────────────────────────────────────
-def get_tickers_via_screener():
-    # yfinance 버전에 따라 import 경로가 다름 — 순서대로 시도
-    Screener = EquityQuery = None
-    for _try in [
-        lambda: __import__('yfinance', fromlist=['Screener', 'EquityQuery']),
-        lambda: __import__('yfinance.screener', fromlist=['Screener', 'EquityQuery']),
-    ]:
-        try:
-            mod = _try()
-            Screener = getattr(mod, 'Screener', None)
-            EquityQuery = getattr(mod, 'EquityQuery', None)
-            if Screener and EquityQuery:
-                break
-        except Exception:
-            pass
-    if not Screener or not EquityQuery:
-        try:
-            import yfinance.screener.query as _q
-            import yfinance.screener.screener as _s
-            EquityQuery = getattr(_q, 'EquityQuery', None) or getattr(_q, 'Query', None)
-            Screener = getattr(_s, 'Screener', None) or getattr(_s, 'Screen', None)
-        except Exception:
-            pass
-    if not Screener or not EquityQuery:
-        raise ImportError('yfinance Screener를 찾을 수 없습니다')
+# ── 1. Yahoo Finance 스크리너 API 직접 호출 ────────────────────────────────────
+def get_tickers_via_yahoo():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://finance.yahoo.com/',
+    })
+
+    # 쿠키 + crumb 획득 (한국 네이버 방식과 동일한 구조)
+    try:
+        session.get('https://fc.yahoo.com', timeout=5)
+    except Exception:
+        pass
+    session.get('https://finance.yahoo.com', timeout=10)
+    crumb = session.get(
+        'https://query2.finance.yahoo.com/v1/test/getcrumb', timeout=10
+    ).text.strip()
 
     tickers, mktcaps = {}, {}
-    qry = EquityQuery('AND', [
-        EquityQuery('gt', ['intradaymarketcap', USD_10B]),
-        EquityQuery('eq', ['region', 'us'])
-    ])
     offset = 0
-    while offset < 3000:
-        s = Screener()
-        s.set_body({
-            'offset': offset, 'size': 250,
-            'sortField': 'intradaymarketcap', 'sortType': 'DESC',
-            'quoteType': 'EQUITY', 'query': qry,
-            'userId': '', 'userIdType': 'guid'
-        })
-        quotes = s.response.get('quotes', [])
+
+    while offset < 5000:
+        payload = {
+            'offset': offset,
+            'size': 250,
+            'sortField': 'intradaymarketcap',
+            'sortType': 'DESC',
+            'quoteType': 'EQUITY',
+            'query': {
+                'operator': 'AND',
+                'operands': [
+                    {'operator': 'GT', 'operands': ['intradaymarketcap', USD_20B]},
+                    {'operator': 'EQ', 'operands': ['region', 'us']}
+                ]
+            },
+            'userId': '',
+            'userIdType': 'guid'
+        }
+        resp = session.post(
+            f'https://query1.finance.yahoo.com/v1/finance/screener'
+            f'?crumb={crumb}&lang=en-US&region=US&formatted=false',
+            json=payload,
+            timeout=15
+        )
+        resp.raise_for_status()
+        result = resp.json().get('finance', {}).get('result', [])
+        if not result:
+            break
+        quotes = result[0].get('quotes', [])
         if not quotes:
             break
+
         for q in quotes:
             sym = q.get('symbol', '').replace('.', '-')
             if not sym or q.get('quoteType') != 'EQUITY':
                 continue
             tickers[sym] = q.get('longName') or q.get('shortName', sym)
             mktcaps[sym] = int(q.get('marketCap', 0) or 0)
+
+        print(f'  {len(tickers)}종목 수집 중... (offset={offset})')
         if len(quotes) < 250:
             break
         offset += 250
+
     return tickers, mktcaps
 
-# ── 백업 리스트 (Screener 완전 실패 시) ───────────────────────────────────────
+# ── 백업 리스트 (API 완전 실패 시) ────────────────────────────────────────────
 BACKUP_TICKERS = {
     'AAPL':'Apple','MSFT':'Microsoft','NVDA':'NVIDIA','AMZN':'Amazon',
     'GOOGL':'Alphabet A','GOOG':'Alphabet C','META':'Meta','TSLA':'Tesla',
@@ -103,40 +117,26 @@ BACKUP_TICKERS = {
     'WDAY':'Workday','ADSK':'Autodesk','MRVL':'Marvell','FTNT':'Fortinet',
     'SNPS':'Synopsys','CDNS':'Cadence','SPGI':'S&P Global',
     'KO':'Coca-Cola','PEP':'PepsiCo','MCD':"McDonald's",
-    'SBUX':'Starbucks','NKE':'Nike','LOW':'Lowe\'s','TGT':'Target',
-    'MDLZ':'Mondelez','PLD':'Prologis','AMT':'American Tower',
-    'NEE':'NextEra Energy','DUK':'Duke Energy','SO':'Southern Co',
-    'MMC':'Marsh McLennan','AON':'Aon','CB':'Chubb','PGR':'Progressive',
-    'AXP':'Amex','COF':'Capital One','USB':'US Bancorp','TFC':'Truist',
-    'SCHW':'Schwab','ICE':'ICE','CME':'CME Group','MSCI':'MSCI',
-    'MCO':'Moody\'s','VRSK':'Verisk','FI':'Fiserv','FIS':'FIS',
-    'PYPL':'PayPal','SQ':'Block','COIN':'Coinbase',
-    'DHR':'Danaher','SYK':'Stryker','MDT':'Medtronic','EW':'Edwards',
-    'ZBH':'Zimmer Biomet','BAX':'Baxter','BDX':'BD',
-    'LIN':'Linde','APD':'Air Products','ECL':'Ecolab','PPG':'PPG',
-    'SHW':'Sherwin-Williams','NEM':'Newmont','FCX':'Freeport',
-    'VMC':'Vulcan','MLM':'Martin Marietta','NUE':'Nucor',
-    'EMR':'Emerson','ETN':'Eaton','PH':'Parker Hannifin','AME':'AMETEK',
-    'ROK':'Rockwell','CARR':'Carrier','OTIS':'Otis',
-    'UNP':'Union Pacific','CSX':'CSX','NSC':'Norfolk Southern',
-    'FDX':'FedEx','DAL':'Delta','UAL':'United Airlines','LUV':'Southwest',
-    'WM':'Waste Management','RSG':'Republic Services',
-    'ZTS':'Zoetis','IDXX':'IDEXX','IQV':'IQVIA',
-    'DXCM':'DexCom','PODD':'Insulet','ALGN':'Align',
-    'TEAM':'Atlassian','OKTA':'Okta','ZS':'Zscaler','CRWD':'CrowdStrike',
-    'SNOW':'Snowflake','MDB':'MongoDB','NET':'Cloudflare',
-    'DDOG':'Datadog','HUBS':'HubSpot','TTD':'Trade Desk',
+    'SBUX':'Starbucks','NKE':'Nike','LOW':"Lowe's",'TGT':'Target',
+    'PLD':'Prologis','AMT':'American Tower','NEE':'NextEra Energy',
+    'GS':'Goldman','AXP':'Amex','COF':'Capital One','SCHW':'Schwab',
+    'ICE':'ICE','CME':'CME Group','MSCI':'MSCI','MCO':"Moody's",
+    'FI':'Fiserv','PYPL':'PayPal','CRWD':'CrowdStrike','SNOW':'Snowflake',
+    'NET':'Cloudflare','DDOG':'Datadog','ZS':'Zscaler',
+    'DHR':'Danaher','SYK':'Stryker','MDT':'Medtronic',
+    'LIN':'Linde','APD':'Air Products','ECL':'Ecolab',
+    'UNP':'Union Pacific','CSX':'CSX','FDX':'FedEx',
 }
 
 # ── 소스 선택 ──────────────────────────────────────────────────────────────────
-mktcap_from_screener = {}
+mktcap_from_api = {}
 tickers = {}
 
 try:
-    tickers, mktcap_from_screener = get_tickers_via_screener()
-    print(f'  ✓ Screener: {len(tickers)}종목 (시총 포함)')
+    tickers, mktcap_from_api = get_tickers_via_yahoo()
+    print(f'  ✓ Yahoo API: {len(tickers)}종목 (시총 $20B+)')
 except Exception as e:
-    print(f'  [WARN] Screener 실패: {e} → 백업 리스트 사용')
+    print(f'  [WARN] Yahoo API 실패: {e} → 백업 리스트 사용')
     tickers = dict(BACKUP_TICKERS)
 
 print(f'  합산 유니버스: {len(tickers)}종목')
@@ -164,19 +164,16 @@ else:
 close_prices.columns = [str(c) for c in close_prices.columns]
 print(f'  다운로드 완료 ({time.time()-t0:.0f}s)')
 
-# ── 3. 시가총액 수집 (Screener로 이미 받은 경우 생략) ─────────────────────────
-if mktcap_from_screener:
-    print(f'\n[US] 시가총액: Screener에서 수집됨 → fetch 생략')
-    mktcap_map = mktcap_from_screener
+# ── 3. 시가총액 (API에서 이미 받은 경우 생략) ─────────────────────────────────
+if mktcap_from_api:
+    print(f'\n[US] 시가총액: Yahoo API에서 수집됨 → fetch 생략')
+    mktcap_map = mktcap_from_api
 else:
     print(f'\n[US] 시가총액 수집 중 ({len(ticker_list)}종목)...')
 
     def get_mktcap(ticker):
         try:
-            fi = yf.Ticker(ticker).fast_info
-            mc = fi.market_cap
-            if not mc:
-                mc = yf.Ticker(ticker).info.get('marketCap', 0)
+            mc = yf.Ticker(ticker).fast_info.market_cap
             return ticker, int(mc) if mc else 0
         except:
             return ticker, 0
@@ -192,16 +189,16 @@ else:
             if done % 50 == 0 or done == len(ticker_list):
                 print(f'  {done}/{len(ticker_list)} ({time.time()-t0:.0f}s)')
 
-# ── 4. 필터링 ($10B+, 가격 데이터 있는 종목) ──────────────────────────────────
+# ── 4. 필터링 ($20B+, 가격 데이터 있는 종목) ──────────────────────────────────
 available_tickers = set(close_prices.columns)
 all_stocks = [
     (t, tickers[t], mktcap_map.get(t, 0))
     for t in ticker_list
-    if mktcap_map.get(t, 0) >= USD_10B and t in available_tickers
+    if mktcap_map.get(t, 0) >= USD_20B and t in available_tickers
 ]
-print(f'\n$10B 이상 & 데이터 있음: {len(all_stocks)}종목')
+print(f'\n$20B 이상 & 데이터 있음: {len(all_stocks)}종목')
 
-# ── 5. 유효 날짜 (80% 이상 종목에 데이터 있는 거래일) ─────────────────────────
+# ── 5. 유효 날짜 ───────────────────────────────────────────────────────────────
 tickers_filtered = [t for t, _, __ in all_stocks]
 coverage  = close_prices[tickers_filtered].notna().sum(axis=1)
 threshold = len(tickers_filtered) * 0.8
