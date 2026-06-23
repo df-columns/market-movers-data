@@ -172,8 +172,9 @@ def fetch_naver_index(code, name):
         print(f'  [WARN] {name} chart API: {e}')
 
     # 2순위: mobile API (코드·필드명 여러 조합 시도)
-    alt = 'KOSPI200' if 'KPI' in code else 'KOSDAQ150'
-    for c in [code, alt]:
+    alt_map = {'KPI200': 'KOSPI200', 'KQ150': 'KOSDAQ150', 'KOSPI': 'KOSPI', 'KOSDAQ': 'KOSDAQ'}
+    alt = alt_map.get(code, code)
+    for c in ([code] if code == alt else [code, alt]):
         try:
             r = session.get(f'https://m.stock.naver.com/api/index/{c}/detail', timeout=10)
             if r.status_code != 200:
@@ -199,10 +200,14 @@ def fetch_naver_index(code, name):
 
 print('\n[KR] 시장 지수 수집 중...')
 indices = {}
-r_k200  = fetch_naver_index('KPI200',  'KOSPI 200')
-r_kq150 = fetch_naver_index('KQ150',   'KOSDAQ 150')
-if r_k200:  indices['kospi200']  = r_k200
-if r_kq150: indices['kosdaq150'] = r_kq150
+for idx_code, idx_name, idx_key in [
+    ('KOSPI',  '코스피',      'kospi'),
+    ('KPI200', 'KOSPI 200',  'kospi200'),
+    ('KQ150',  'KOSDAQ 150', 'kosdaq150'),
+]:
+    result = fetch_naver_index(idx_code, idx_name)
+    if result:
+        indices[idx_key] = result
 
 # ── Firebase 업로드 ─────────────────────────────────────────────────────────────
 print('\n[KR] Firebase 업로드 중...')
