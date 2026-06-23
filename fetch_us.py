@@ -162,7 +162,23 @@ for date in valid_dates:
             row.append(0)
     prices_data.append(row)
 
-# ── 6. Firebase 업로드 ─────────────────────────────────────────────────────────
+# ── 6. 지수 수집 (S&P 500, NASDAQ 100, Dow 30) ────────────────────────────────
+print('\n[US] 시장 지수 수집 중...')
+indices = {}
+for sym, name, key in [('^GSPC', 'S&P 500', 'sp500'), ('^NDX', 'NASDAQ 100', 'ndx100'), ('^DJI', 'Dow 30', 'dji30')]:
+    try:
+        info = yf.Ticker(sym).fast_info
+        curr = float(info.last_price)
+        prev = float(info.previous_close)
+        if curr and prev:
+            change = curr - prev
+            changePct = (change / prev) * 100
+            indices[key] = {'name': name, 'value': curr, 'change': change, 'changePct': changePct}
+            print(f'  {name}: {curr:,.2f} ({change:+.2f}, {changePct:+.2f}%)')
+    except Exception as e:
+        print(f'  [WARN] {sym}: {e}')
+
+# ── 7. Firebase 업로드 ─────────────────────────────────────────────────────────
 print('\n[US] Firebase 업로드 중...')
 stocks_data = [{'c': t, 'n': name, 'm': int(mc)} for t, name, mc in all_stocks_full]
 
@@ -171,6 +187,7 @@ collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
 
 firebase_db.reference('/v1/us').set({
     'updated': valid_dates[0], 'collected_at': collected_at,
-    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data
+    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
+    'indices': indices
 })
 print(f'[US] 완료! ({time.time()-t0:.0f}초)')
