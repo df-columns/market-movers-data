@@ -135,28 +135,72 @@ valid_dates = sorted(
 print(f'  유효 날짜: {len(valid_dates)}일')
 
 # ── 지수 수집 (KOSPI 200, KOSDAQ 150) ─────────────────────────────────────────
-def fetch_naver_index(code, name, fallback_codes=None):
-    for c in [code] + (fallback_codes or []):
+def fetch_naver_index(code, name):
+    today = datetime.today()
+    start = today - timedelta(days=10)
+
+    # 1순위: 기존 주식과 동일한 chart API (index 엔드포인트)
+    try:
+        r = session.get(
+            f'https://api.stock.naver.com/chart/domestic/index/{code}/day',
+            params={
+                'startDateTime': start.strftime('%Y%m%d') + '000000',
+                'endDateTime':   today.strftime('%Y%m%d') + '235959'
+            },
+            timeout=15
+        )
+        if r.status_code == 200:
+            items = r.json()
+            if items and len(items) >= 2:
+                items_sorted = sorted(items, key=lambda x: x.get('localDate', ''), reverse=True)
+                def _get(item):
+                    for k in ['closePrice', 'closeIndexPrice', 'close']:
+                        v = item.get(k)
+                        if v: return float(v)
+                    return 0.0
+                curr = _get(items_sorted[0])
+                prev = _get(items_sorted[1])
+                if curr and prev:
+                    change = curr - prev
+                    changePct = (change / prev) * 100
+                    print(f'  {name}: {curr:.2f} ({change:+.2f}, {changePct:+.2f}%) [chart API]')
+                    return {'name': name, 'value': round(curr, 2), 'change': round(change, 2), 'changePct': round(changePct, 4)}
+            print(f'  [WARN] {name} chart API: 데이터 {len(items) if items else 0}건')
+        else:
+            print(f'  [WARN] {name} chart API: HTTP {r.status_code}')
+    except Exception as e:
+        print(f'  [WARN] {name} chart API: {e}')
+
+    # 2순위: mobile API (코드·필드명 여러 조합 시도)
+    alt = 'KOSPI200' if 'KPI' in code else 'KOSDAQ150'
+    for c in [code, alt]:
         try:
             r = session.get(f'https://m.stock.naver.com/api/index/{c}/detail', timeout=10)
             if r.status_code != 200:
+                print(f'  [WARN] {name} mobile ({c}): HTTP {r.status_code}')
                 continue
             d = r.json()
-            value     = float(d.get('closeIndexPrice') or d.get('currentIndexPrice') or 0)
-            change    = float(d.get('compareToPreviousClosePrice') or 0)
-            changePct = float(d.get('fluctuationsRatio') or 0)
-            if value:
-                print(f'  {name}: {value:.2f} ({change:+.2f}, {changePct:+.2f}%)')
-                return {'name': name, 'value': value, 'change': change, 'changePct': changePct}
+            print(f'  [DEBUG] {name} ({c}) keys: {sorted(d.keys())}')  # 어떤 필드인지 확인
+            for pk in ['closeIndexPrice', 'currentIndexPrice', 'closePrice', 'price']:
+                raw = d.get(pk)
+                if not raw:
+                    continue
+                value     = float(raw)
+                change    = float(d.get('compareToPreviousClosePrice') or d.get('changePrice') or 0)
+                changePct = float(d.get('fluctuationsRatio') or d.get('changeRate') or 0)
+                if value:
+                    print(f'  {name}: {value:.2f} ({change:+.2f}, {changePct:+.2f}%) [mobile, {c}/{pk}]')
+                    return {'name': name, 'value': round(value, 2), 'change': round(change, 2), 'changePct': round(changePct, 4)}
         except Exception as e:
-            print(f'  [WARN] {name} ({c}): {e}')
-    print(f'  [WARN] {name}: 수집 실패')
+            print(f'  [WARN] {name} mobile ({c}): {e}')
+
+    print(f'  [FAIL] {name}: 모든 방법 실패')
     return None
 
 print('\n[KR] 시장 지수 수집 중...')
 indices = {}
-r_k200  = fetch_naver_index('KPI200',  'KOSPI 200',   ['KOSPI200'])
-r_kq150 = fetch_naver_index('KQ150',   'KOSDAQ 150',  ['KOSDAQ150'])
+r_k200  = fetch_naver_index('KPI200',  'KOSPI 200')
+r_kq150 = fetch_naver_index('KQ150',   'KOSDAQ 150')
 if r_k200:  indices['kospi200']  = r_k200
 if r_kq150: indices['kosdaq150'] = r_kq150
 
