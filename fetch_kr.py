@@ -134,6 +134,33 @@ valid_dates = sorted(
 )
 print(f'  유효 날짜: {len(valid_dates)}일')
 
+# ── 지수 수집 (KOSPI 200, KOSDAQ 150) ─────────────────────────────────────────
+def fetch_naver_index(code, name, fallback_codes=None):
+    for c in [code] + (fallback_codes or []):
+        try:
+            r = session.get(f'https://m.stock.naver.com/api/index/{c}/detail', timeout=10)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            value     = float(d.get('closeIndexPrice') or d.get('currentIndexPrice') or 0)
+            change    = float(d.get('compareToPreviousClosePrice') or 0)
+            changePct = float(d.get('fluctuationsRatio') or 0)
+            if value:
+                print(f'  {name}: {value:.2f} ({change:+.2f}, {changePct:+.2f}%)')
+                return {'name': name, 'value': value, 'change': change, 'changePct': changePct}
+        except Exception as e:
+            print(f'  [WARN] {name} ({c}): {e}')
+    print(f'  [WARN] {name}: 수집 실패')
+    return None
+
+print('\n[KR] 시장 지수 수집 중...')
+indices = {}
+r_k200  = fetch_naver_index('KPI200',  'KOSPI 200',   ['KOSPI200'])
+r_kq150 = fetch_naver_index('KQ150',   'KOSDAQ 150',  ['KOSDAQ150'])
+if r_k200:  indices['kospi200']  = r_k200
+if r_kq150: indices['kosdaq150'] = r_kq150
+
+# ── Firebase 업로드 ─────────────────────────────────────────────────────────────
 print('\n[KR] Firebase 업로드 중...')
 stocks_data = [{'c': code, 'n': name, 'm': mktcap} for code, name, mktcap in all_stocks]
 prices_data = [
@@ -145,6 +172,7 @@ collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
 
 firebase_db.reference('/v1/kr').set({
     'updated': valid_dates[0], 'collected_at': collected_at,
-    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data
+    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
+    'indices': indices
 })
 print(f'[KR] 완료! ({time.time()-t0:.0f}초)')
