@@ -5,3 +5,4 @@ urllib3
 pandas
 yfinance>=0.2.36,<0.3.0
 lxml
+
