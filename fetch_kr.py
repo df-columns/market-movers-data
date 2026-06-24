@@ -231,3 +231,6 @@ indices_history = {d: existing_indices[d] for d in all_idx_dates[:400]}
 firebase_db.reference('/v1/kr').set({
     'updated': valid_dates[0], 'collected_at': collected_at,
     'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
+    'indices': indices_history
+})
+print(f'[KR] 완료! ({time.time()-t0:.0f}초)')
