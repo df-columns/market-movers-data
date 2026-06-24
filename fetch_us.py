@@ -189,5 +189,8 @@ KST = timezone(timedelta(hours=9))
 collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
 
 # 기존 지수 히스토리 읽어서 오늘 날짜 추가 후 최근 400일만 유지
-existing_indices = firebase_db.reference('/v1/us/indices').get() or {}
+import re as _re
+existing_raw = firebase_db.reference('/v1/us/indices').get() or {}
+_date_re = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+existing_indices = {k: v for k, v in existing_raw.items() if _date_re.match(k)}
 existing_indices[valid_dates[0]] = indices
