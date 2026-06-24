@@ -186,7 +186,7 @@ for chart_code, name, key in [('KOSPI', 'KOSPI', 'kospi'), ('KPI200', 'KOSPI 200
     if result:
         indices[key] = result
 
-# KOSDAQ 150: yfinance ^KQ11
+# 코스닥: yfinance ^KQ11 (코스닥 종합)
 try:
     bd_p = datetime.strptime(prev_date, '%Y-%m-%d')
     bd_c = datetime.strptime(curr_date, '%Y-%m-%d')
@@ -203,13 +203,13 @@ try:
             p_d, p_v = p_list[-1]
             chg = float(c_v) - float(p_v)
             pct = chg / float(p_v) * 100
-            print(f'  KOSDAQ 150: {float(c_v):,.2f} ({chg:+.2f}, {pct:+.2f}%) [yfinance/^KQ11 {c_d}←{p_d}]')
-            indices['kosdaq150'] = {'name': 'KOSDAQ 150', 'value': round(float(c_v), 2),
-                                    'change': round(chg, 2), 'changePct': round(pct, 4)}
+            print(f'  코스닥: {float(c_v):,.2f} ({chg:+.2f}, {pct:+.2f}%) [yfinance/^KQ11 {c_d}←{p_d}]')
+            indices['kosdaq'] = {'name': '코스닥', 'value': round(float(c_v), 2),
+                                 'change': round(chg, 2), 'changePct': round(pct, 4)}
 except Exception as e:
-    print(f'  [WARN] KOSDAQ 150 yfinance: {e}')
+    print(f'  [WARN] 코스닥 yfinance: {e}')
 
-# ── Firebase 업로드 ─────────────────────────────────────────────────────────────
+# ── Firebase 업로드 (지수 히스토리 날짜별 누적) ────────────────────────────────
 print('\n[KR] Firebase 업로드 중...')
 stocks_data = [{'c': code, 'n': name, 'm': mktcap} for code, name, mktcap in all_stocks]
 prices_data = [
@@ -219,9 +219,15 @@ prices_data = [
 KST = timezone(timedelta(hours=9))
 collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
 
+# 기존 지수 히스토리 읽어서 오늘 날짜 추가 후 최근 400일만 유지
+existing_indices = firebase_db.reference('/v1/kr/indices').get() or {}
+existing_indices[curr_date] = indices
+all_idx_dates = sorted(existing_indices.keys(), reverse=True)
+indices_history = {d: existing_indices[d] for d in all_idx_dates[:400]}
+
 firebase_db.reference('/v1/kr').set({
     'updated': valid_dates[0], 'collected_at': collected_at,
     'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
-    'indices': indices
+    'indices': indices_history
 })
 print(f'[KR] 완료! ({time.time()-t0:.0f}초)')
