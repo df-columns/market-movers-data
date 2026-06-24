@@ -135,62 +135,44 @@ valid_dates = sorted(
 print(f'  유효 날짜: {len(valid_dates)}일')
 
 # ── 지수 수집 ──────────────────────────────────────────────────────────────────
-# KOSPI(1001)·KOSPI200(1028): pykrx — KRX 공식 데이터, 거래일 누락 없음
-# KOSDAQ 150: yfinance ^KQ11 — NAVER·KRX 모두 미지원, 코스닥 종합으로 대체
+# KOSPI·KOSPI200: NAVER chart API (GitHub Actions에서 작동 확인)
+# KOSDAQ 150: yfinance ^KQ11 (NAVER 미지원, 코스닥 종합으로 대체)
 import yfinance as _yf
 
-def _krx_index(krx_code, name, curr_date, prev_date):
-    """pykrx로 curr_date·prev_date 기준 종가 차이 계산 (KRX 공식 데이터)"""
+def _naver_idx(chart_code, name):
+    """NAVER chart API — 최근 2거래일 종가 차이"""
+    today = datetime.today()
+    start = today - timedelta(days=10)
     try:
-        from pykrx import stock as _krx
-        bd_p  = datetime.strptime(prev_date, '%Y-%m-%d') - timedelta(days=5)
-        bd_c  = datetime.strptime(curr_date, '%Y-%m-%d')
-        df = _krx.get_index_ohlcv_by_date(
-            bd_p.strftime('%Y%m%d'), bd_c.strftime('%Y%m%d'), krx_code)
-        if df is None or len(df) < 2:
+        r = session.get(
+            f'https://api.stock.naver.com/chart/domestic/index/{chart_code}/day',
+            params={'startDateTime': start.strftime('%Y%m%d') + '000000',
+                    'endDateTime':   today.strftime('%Y%m%d') + '235959'},
+            timeout=15
+        )
+        if r.status_code != 200:
+            print(f'  [WARN] {name} NAVER/{chart_code}: HTTP {r.status_code}')
             return None
-        date_strs = df.index.strftime('%Y-%m-%d').tolist()
-        closes    = df['종가'].tolist()
-        c_cands = [(d, c) for d, c in zip(date_strs, closes) if d <= curr_date]
-        p_cands = [(d, c) for d, c in zip(date_strs, closes) if d <= prev_date]
-        if not c_cands or not p_cands or c_cands[-1][0] == p_cands[-1][0]:
+        items = r.json()
+        if not items or len(items) < 2:
+            print(f'  [WARN] {name} NAVER/{chart_code}: 데이터 {len(items) if items else 0}건')
             return None
-        c_date, curr_val = c_cands[-1]
-        p_date, prev_val = p_cands[-1]
-        change = float(curr_val) - float(prev_val)
-        pct    = change / float(prev_val) * 100
-        print(f'  {name}: {float(curr_val):,.2f} ({change:+.2f}, {pct:+.2f}%) [pykrx/{krx_code} {c_date}←{p_date}]')
-        return {'name': name, 'value': round(float(curr_val), 2),
-                'change': round(change, 2), 'changePct': round(pct, 4)}
+        s = sorted(items, key=lambda x: x.get('localDate', ''), reverse=True)
+        def _v(item):
+            for k in ['closePrice', 'closeIndexPrice', 'close']:
+                v = item.get(k)
+                if v: return float(v)
+            return 0.0
+        curr, prev = _v(s[0]), _v(s[1])
+        if not curr or not prev:
+            return None
+        change = curr - prev
+        print(f'  {name}: {curr:,.2f} ({change:+.2f}, {change/prev*100:+.2f}%) '
+              f'[NAVER {s[0].get("localDate","")}←{s[1].get("localDate","")}]')
+        return {'name': name, 'value': round(curr, 2),
+                'change': round(change, 2), 'changePct': round(change / prev * 100, 4)}
     except Exception as e:
-        print(f'  [WARN] {name} pykrx/{krx_code}: {e}')
-    return None
-
-def _yf_index(sym, name, curr_date, prev_date):
-    """yfinance로 curr_date·prev_date 기준 종가 차이 계산"""
-    try:
-        bd_p  = datetime.strptime(prev_date, '%Y-%m-%d')
-        bd_c  = datetime.strptime(curr_date, '%Y-%m-%d')
-        start = (bd_p - timedelta(days=7)).strftime('%Y-%m-%d')
-        end   = (bd_c + timedelta(days=2)).strftime('%Y-%m-%d')
-        hist  = _yf.Ticker(sym).history(start=start, end=end)
-        if hist.empty:
-            return None
-        date_strs = hist.index.strftime('%Y-%m-%d').tolist()
-        closes    = hist['Close'].tolist()
-        c_cands = [(d, c) for d, c in zip(date_strs, closes) if d <= curr_date]
-        p_cands = [(d, c) for d, c in zip(date_strs, closes) if d <= prev_date]
-        if not c_cands or not p_cands or c_cands[-1][0] == p_cands[-1][0]:
-            return None
-        c_date, curr_val = c_cands[-1]
-        p_date, prev_val = p_cands[-1]
-        change = float(curr_val) - float(prev_val)
-        pct    = change / float(prev_val) * 100
-        print(f'  {name}: {float(curr_val):,.2f} ({change:+.2f}, {pct:+.2f}%) [yfinance/{sym} {c_date}←{p_date}]')
-        return {'name': name, 'value': round(float(curr_val), 2),
-                'change': round(change, 2), 'changePct': round(pct, 4)}
-    except Exception as e:
-        print(f'  [WARN] {name} yfinance/{sym}: {e}')
+        print(f'  [WARN] {name} NAVER/{chart_code}: {e}')
     return None
 
 print('\n[KR] 시장 지수 수집 중...')
@@ -198,16 +180,34 @@ curr_date = valid_dates[0]
 prev_date = valid_dates[1]
 indices   = {}
 
-# KOSPI, KOSPI 200: pykrx (KRX 공식 → 거래일 누락 없음)
-for krx_code, name, key in [('1001', 'KOSPI', 'kospi'), ('1028', 'KOSPI 200', 'kospi200')]:
-    result = _krx_index(krx_code, name, curr_date, prev_date)
+# KOSPI, KOSPI 200: NAVER chart API
+for chart_code, name, key in [('KOSPI', 'KOSPI', 'kospi'), ('KPI200', 'KOSPI 200', 'kospi200')]:
+    result = _naver_idx(chart_code, name)
     if result:
         indices[key] = result
 
-# KOSDAQ 150: yfinance ^KQ11 (코스닥 종합)
-result = _yf_index('^KQ11', 'KOSDAQ 150', curr_date, prev_date)
-if result:
-    indices['kosdaq150'] = result
+# KOSDAQ 150: yfinance ^KQ11
+try:
+    bd_p = datetime.strptime(prev_date, '%Y-%m-%d')
+    bd_c = datetime.strptime(curr_date, '%Y-%m-%d')
+    hist = _yf.Ticker('^KQ11').history(
+        start=(bd_p - timedelta(days=7)).strftime('%Y-%m-%d'),
+        end  =(bd_c + timedelta(days=2)).strftime('%Y-%m-%d'))
+    if not hist.empty:
+        d_strs = hist.index.strftime('%Y-%m-%d').tolist()
+        closes = hist['Close'].tolist()
+        c_list = [(d, c) for d, c in zip(d_strs, closes) if d <= curr_date]
+        p_list = [(d, c) for d, c in zip(d_strs, closes) if d <= prev_date]
+        if c_list and p_list and c_list[-1][0] != p_list[-1][0]:
+            c_d, c_v = c_list[-1]
+            p_d, p_v = p_list[-1]
+            chg = float(c_v) - float(p_v)
+            pct = chg / float(p_v) * 100
+            print(f'  KOSDAQ 150: {float(c_v):,.2f} ({chg:+.2f}, {pct:+.2f}%) [yfinance/^KQ11 {c_d}←{p_d}]')
+            indices['kosdaq150'] = {'name': 'KOSDAQ 150', 'value': round(float(c_v), 2),
+                                    'change': round(chg, 2), 'changePct': round(pct, 4)}
+except Exception as e:
+    print(f'  [WARN] KOSDAQ 150 yfinance: {e}')
 
 # ── Firebase 업로드 ─────────────────────────────────────────────────────────────
 print('\n[KR] Firebase 업로드 중...')
