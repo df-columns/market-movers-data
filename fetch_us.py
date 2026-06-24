@@ -167,14 +167,17 @@ print('\n[US] 시장 지수 수집 중...')
 indices = {}
 for sym, name, key in [('^GSPC', 'S&P 500', 'sp500'), ('^NDX', 'NASDAQ 100', 'ndx100'), ('^DJI', 'Dow 30', 'dji30')]:
     try:
-        info = yf.Ticker(sym).fast_info
-        curr = float(info.last_price)
-        prev = float(info.previous_close)
-        if curr and prev:
+        hist = yf.Ticker(sym).history(period='5d')
+        if len(hist) >= 2:
+            curr = float(hist['Close'].iloc[-1])
+            prev = float(hist['Close'].iloc[-2])
             change = curr - prev
             changePct = (change / prev) * 100
-            indices[key] = {'name': name, 'value': curr, 'change': change, 'changePct': changePct}
+            indices[key] = {'name': name, 'value': round(curr, 2),
+                            'change': round(change, 2), 'changePct': round(changePct, 4)}
             print(f'  {name}: {curr:,.2f} ({change:+.2f}, {changePct:+.2f}%)')
+        else:
+            print(f'  [WARN] {sym}: 데이터 부족 ({len(hist)}일)')
     except Exception as e:
         print(f'  [WARN] {sym}: {e}')
 
