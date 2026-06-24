@@ -134,66 +134,92 @@ valid_dates = sorted(
 )
 print(f'  유효 날짜: {len(valid_dates)}일')
 
-# ── 지수 수집 (KOSPI 200, KOSDAQ 150) ─────────────────────────────────────────
+# ── 지수 수집 ──────────────────────────────────────────────────────────────────
+# 각 코드별로 시도할 차트 API 코드 목록 (NAVER 내부 코드가 버전마다 다름)
+_CHART_CODES = {
+    'KOSPI':  ['KOSPI'],
+    'KPI200': ['KPI200', 'KOSPI200'],
+    'KQ150':  ['KQ150', 'KOSDAQ150', 'KOSDAQ_150', '2203'],  # KRX 숫자코드까지 시도
+}
+# yfinance 폴백 티커 (Yahoo Finance 기준)
+_YF_TICKER = {
+    'KOSPI':  '^KS11',   # 코스피 종합
+    'KPI200': '^KS200',  # 코스피 200
+    'KQ150':  '^KQ11',   # 코스닥 종합 (KOSDAQ 150은 Yahoo Finance 미지원 → 종합으로 대체)
+}
+
 def fetch_naver_index(code, name):
     today = datetime.today()
     start = today - timedelta(days=10)
 
-    # 1순위: 기존 주식과 동일한 chart API (index 엔드포인트)
-    try:
-        r = session.get(
-            f'https://api.stock.naver.com/chart/domestic/index/{code}/day',
-            params={
-                'startDateTime': start.strftime('%Y%m%d') + '000000',
-                'endDateTime':   today.strftime('%Y%m%d') + '235959'
-            },
-            timeout=15
-        )
-        if r.status_code == 200:
-            items = r.json()
-            if items and len(items) >= 2:
-                items_sorted = sorted(items, key=lambda x: x.get('localDate', ''), reverse=True)
-                def _get(item):
-                    for k in ['closePrice', 'closeIndexPrice', 'close']:
-                        v = item.get(k)
-                        if v: return float(v)
-                    return 0.0
-                curr = _get(items_sorted[0])
-                prev = _get(items_sorted[1])
-                if curr and prev:
-                    change = curr - prev
-                    changePct = (change / prev) * 100
-                    print(f'  {name}: {curr:.2f} ({change:+.2f}, {changePct:+.2f}%) [chart API]')
-                    return {'name': name, 'value': round(curr, 2), 'change': round(change, 2), 'changePct': round(changePct, 4)}
-            print(f'  [WARN] {name} chart API: 데이터 {len(items) if items else 0}건')
-        else:
-            print(f'  [WARN] {name} chart API: HTTP {r.status_code}')
-    except Exception as e:
-        print(f'  [WARN] {name} chart API: {e}')
+    def _close(item):
+        for k in ['closePrice', 'closeIndexPrice', 'close']:
+            v = item.get(k)
+            if v: return float(v)
+        return 0.0
 
-    # 2순위: mobile API (코드·필드명 여러 조합 시도)
-    alt_map = {'KPI200': 'KOSPI200', 'KQ150': 'KOSDAQ150', 'KOSPI': 'KOSPI', 'KOSDAQ': 'KOSDAQ'}
-    alt = alt_map.get(code, code)
-    for c in ([code] if code == alt else [code, alt]):
+    # 1순위: chart API (여러 코드 순서대로 시도)
+    for chart_code in _CHART_CODES.get(code, [code]):
+        try:
+            r = session.get(
+                f'https://api.stock.naver.com/chart/domestic/index/{chart_code}/day',
+                params={'startDateTime': start.strftime('%Y%m%d') + '000000',
+                        'endDateTime':   today.strftime('%Y%m%d') + '235959'},
+                timeout=15
+            )
+            if r.status_code == 200:
+                items = r.json()
+                if items and len(items) >= 2:
+                    s = sorted(items, key=lambda x: x.get('localDate', ''), reverse=True)
+                    curr, prev = _close(s[0]), _close(s[1])
+                    if curr and prev:
+                        change = curr - prev
+                        print(f'  {name}: {curr:.2f} ({change:+.2f}, {change/prev*100:+.2f}%) [chart/{chart_code}]')
+                        return {'name': name, 'value': round(curr, 2),
+                                'change': round(change, 2), 'changePct': round(change / prev * 100, 4)}
+                print(f'  [WARN] {name} chart/{chart_code}: {len(items) if items else 0}건')
+            else:
+                print(f'  [WARN] {name} chart/{chart_code}: HTTP {r.status_code}')
+        except Exception as e:
+            print(f'  [WARN] {name} chart/{chart_code}: {e}')
+
+    # 2순위: NAVER 모바일 API
+    for c in list(dict.fromkeys([code] + _CHART_CODES.get(code, [])[:2])):
         try:
             r = session.get(f'https://m.stock.naver.com/api/index/{c}/detail', timeout=10)
             if r.status_code != 200:
-                print(f'  [WARN] {name} mobile ({c}): HTTP {r.status_code}')
+                print(f'  [WARN] {name} mobile/{c}: HTTP {r.status_code}')
                 continue
             d = r.json()
-            print(f'  [DEBUG] {name} ({c}) keys: {sorted(d.keys())}')  # 어떤 필드인지 확인
             for pk in ['closeIndexPrice', 'currentIndexPrice', 'closePrice', 'price']:
                 raw = d.get(pk)
-                if not raw:
-                    continue
+                if not raw: continue
                 value     = float(raw)
                 change    = float(d.get('compareToPreviousClosePrice') or d.get('changePrice') or 0)
                 changePct = float(d.get('fluctuationsRatio') or d.get('changeRate') or 0)
                 if value:
-                    print(f'  {name}: {value:.2f} ({change:+.2f}, {changePct:+.2f}%) [mobile, {c}/{pk}]')
-                    return {'name': name, 'value': round(value, 2), 'change': round(change, 2), 'changePct': round(changePct, 4)}
+                    print(f'  {name}: {value:.2f} ({change:+.2f}, {changePct:+.2f}%) [mobile/{c}]')
+                    return {'name': name, 'value': round(value, 2),
+                            'change': round(change, 2), 'changePct': round(changePct, 4)}
         except Exception as e:
-            print(f'  [WARN] {name} mobile ({c}): {e}')
+            print(f'  [WARN] {name} mobile/{c}: {e}')
+
+    # 3순위: yfinance 폴백
+    yf_sym = _YF_TICKER.get(code)
+    if yf_sym:
+        try:
+            import yfinance as yf
+            hist = yf.Ticker(yf_sym).history(period='5d')
+            if len(hist) >= 2:
+                curr = float(hist['Close'].iloc[-1])
+                prev = float(hist['Close'].iloc[-2])
+                change = curr - prev
+                label = '(KOSDAQ 종합 대체)' if code == 'KQ150' else ''
+                print(f'  {name}: {curr:.2f} ({change:+.2f}, {change/prev*100:+.2f}%) [yfinance/{yf_sym}] {label}')
+                return {'name': name, 'value': round(curr, 2),
+                        'change': round(change, 2), 'changePct': round(change / prev * 100, 4)}
+        except Exception as e:
+            print(f'  [WARN] {name} yfinance/{yf_sym}: {e}')
 
     print(f'  [FAIL] {name}: 모든 방법 실패')
     return None
