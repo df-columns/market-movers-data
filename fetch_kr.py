@@ -220,7 +220,10 @@ KST = timezone(timedelta(hours=9))
 collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
 
 # 기존 지수 히스토리 읽어서 오늘 날짜 추가 후 최근 400일만 유지
-existing_indices = firebase_db.reference('/v1/kr/indices').get() or {}
+existing_raw = firebase_db.reference('/v1/kr/indices').get() or {}
+import re as _re
+_date_re = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+existing_indices = {k: v for k, v in existing_raw.items() if _date_re.match(k)}
 existing_indices[curr_date] = indices
 all_idx_dates = sorted(existing_indices.keys(), reverse=True)
 indices_history = {d: existing_indices[d] for d in all_idx_dates[:400]}
@@ -228,6 +231,3 @@ indices_history = {d: existing_indices[d] for d in all_idx_dates[:400]}
 firebase_db.reference('/v1/kr').set({
     'updated': valid_dates[0], 'collected_at': collected_at,
     'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
-    'indices': indices_history
-})
-print(f'[KR] 완료! ({time.time()-t0:.0f}초)')
