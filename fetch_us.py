@@ -181,16 +181,13 @@ for sym, name, key in [('^GSPC', 'S&P 500', 'sp500'), ('^NDX', 'NASDAQ 100', 'nd
     except Exception as e:
         print(f'  [WARN] {sym}: {e}')
 
-# ── 7. Firebase 업로드 ─────────────────────────────────────────────────────────
+# ── 7. Firebase 업로드 (지수 히스토리 날짜별 누적) ────────────────────────────
 print('\n[US] Firebase 업로드 중...')
 stocks_data = [{'c': t, 'n': name, 'm': int(mc)} for t, name, mc in all_stocks_full]
 
 KST = timezone(timedelta(hours=9))
 collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
 
-firebase_db.reference('/v1/us').set({
-    'updated': valid_dates[0], 'collected_at': collected_at,
-    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
-    'indices': indices
-})
-print(f'[US] 완료! ({time.time()-t0:.0f}초)')
+# 기존 지수 히스토리 읽어서 오늘 날짜 추가 후 최근 400일만 유지
+existing_indices = firebase_db.reference('/v1/us/indices').get() or {}
+existing_indices[valid_dates[0]] = indices
