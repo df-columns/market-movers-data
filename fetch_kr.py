@@ -134,48 +134,90 @@ valid_dates = sorted(
 )
 print(f'  유효 날짜: {len(valid_dates)}일')
 
-# ── 지수 수집 (기준일: valid_dates[0]) ──────────────────────────────────────────
+# ── 지수 수집 ──────────────────────────────────────────────────────────────────
+# KOSPI·KOSPI200: NAVER chart API (Yahoo Finance의 ^KS200은 일부 거래일 누락)
+# KOSDAQ 150: yfinance ^KQ11 (NAVER에서 미지원)
+
 import yfinance as _yf
 
-def fetch_index_yf(sym, name, base_date):
-    """base_date(YYYY-MM-DD) 기준 종가와 전일 대비 변동폭을 yfinance로 수집"""
+def _naver_index(chart_code, name):
+    """NAVER chart API로 최근 2거래일 종가 차이를 구함"""
+    today = datetime.today()
+    start = today - timedelta(days=10)
     try:
-        bd    = datetime.strptime(base_date, '%Y-%m-%d')
-        start = (bd - timedelta(days=14)).strftime('%Y-%m-%d')
-        end   = (bd + timedelta(days=2)).strftime('%Y-%m-%d')
+        r = session.get(
+            f'https://api.stock.naver.com/chart/domestic/index/{chart_code}/day',
+            params={'startDateTime': start.strftime('%Y%m%d') + '000000',
+                    'endDateTime':   today.strftime('%Y%m%d') + '235959'},
+            timeout=15
+        )
+        if r.status_code != 200:
+            return None
+        items = r.json()
+        if not items or len(items) < 2:
+            return None
+        s = sorted(items, key=lambda x: x.get('localDate', ''), reverse=True)
+        def _v(item):
+            for k in ['closePrice', 'closeIndexPrice', 'close']:
+                v = item.get(k)
+                if v: return float(v)
+            return 0.0
+        curr, prev = _v(s[0]), _v(s[1])
+        if not curr or not prev:
+            return None
+        change = curr - prev
+        print(f'  {name}: {curr:,.2f} ({change:+.2f}, {change/prev*100:+.2f}%) [NAVER/{chart_code}]')
+        return {'name': name, 'value': round(curr, 2),
+                'change': round(change, 2), 'changePct': round(change / prev * 100, 4)}
+    except Exception as e:
+        print(f'  [WARN] {name} NAVER/{chart_code}: {e}')
+    return None
+
+def _yf_index(sym, name, curr_date, prev_date):
+    """yfinance로 curr_date 종가와 prev_date 종가(직전 거래일)를 비교"""
+    try:
+        bd_p  = datetime.strptime(prev_date, '%Y-%m-%d')
+        bd_c  = datetime.strptime(curr_date, '%Y-%m-%d')
+        start = (bd_p - timedelta(days=7)).strftime('%Y-%m-%d')
+        end   = (bd_c + timedelta(days=2)).strftime('%Y-%m-%d')
         hist  = _yf.Ticker(sym).history(start=start, end=end)
-        if hist.empty or len(hist) < 2:
-            print(f'  [WARN] {name}: 데이터 부족')
+        if hist.empty:
             return None
         date_strs = hist.index.strftime('%Y-%m-%d').tolist()
         closes    = hist['Close'].tolist()
-        # base_date 이하 날짜만 추출 (기준일이 공휴일이면 그 직전 거래일 사용)
-        valid = [(d, c) for d, c in zip(date_strs, closes) if d <= base_date]
-        if len(valid) < 2:
-            print(f'  [WARN] {name}: {base_date} 이전 데이터 부족')
+        c_cands = [(d, c) for d, c in zip(date_strs, closes) if d <= curr_date]
+        p_cands = [(d, c) for d, c in zip(date_strs, closes) if d <= prev_date]
+        if not c_cands or not p_cands:
             return None
-        curr      = float(valid[-1][1])
-        prev      = float(valid[-2][1])
-        change    = curr - prev
-        changePct = change / prev * 100
-        print(f'  {name} ({sym}): {curr:,.2f} ({change:+.2f}, {changePct:+.2f}%) [{valid[-1][0]}]')
-        return {'name': name, 'value': round(curr, 2),
-                'change': round(change, 2), 'changePct': round(changePct, 4)}
+        c_date, curr_val = c_cands[-1]
+        p_date, prev_val = p_cands[-1]
+        if c_date == p_date:
+            return None
+        change = float(curr_val) - float(prev_val)
+        pct    = change / float(prev_val) * 100
+        print(f'  {name}: {float(curr_val):,.2f} ({change:+.2f}, {pct:+.2f}%) [yfinance/{sym} {c_date}←{p_date}]')
+        return {'name': name, 'value': round(float(curr_val), 2),
+                'change': round(change, 2), 'changePct': round(pct, 4)}
     except Exception as e:
-        print(f'  [WARN] {name} ({sym}): {e}')
-        return None
+        print(f'  [WARN] {name} yfinance/{sym}: {e}')
+    return None
 
 print('\n[KR] 시장 지수 수집 중...')
-base_date = valid_dates[0]
+curr_date = valid_dates[0]
+prev_date = valid_dates[1]
 indices   = {}
-for sym, name, key in [
-    ('^KS11',  'KOSPI',      'kospi'),
-    ('^KS200', 'KOSPI 200',  'kospi200'),
-    ('^KQ11',  'KOSDAQ 150', 'kosdaq150'),
-]:
-    result = fetch_index_yf(sym, name, base_date)
+
+# KOSPI, KOSPI200: NAVER chart API
+for chart_code, name, key in [('KOSPI', 'KOSPI', 'kospi'), ('KPI200', 'KOSPI 200', 'kospi200')]:
+    result = _naver_index(chart_code, name) or _yf_index(
+        '^KS11' if chart_code == 'KOSPI' else '^KS200', name, curr_date, prev_date)
     if result:
         indices[key] = result
+
+# KOSDAQ 150: yfinance (NAVER 미지원)
+result = _yf_index('^KQ11', 'KOSDAQ 150', curr_date, prev_date)
+if result:
+    indices['kosdaq150'] = result
 
 # ── Firebase 업로드 ─────────────────────────────────────────────────────────────
 print('\n[KR] Firebase 업로드 중...')
