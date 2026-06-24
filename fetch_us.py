@@ -194,3 +194,12 @@ existing_raw = firebase_db.reference('/v1/us/indices').get() or {}
 _date_re = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
 existing_indices = {k: v for k, v in existing_raw.items() if _date_re.match(k)}
 existing_indices[valid_dates[0]] = indices
+all_idx_dates = sorted(existing_indices.keys(), reverse=True)
+indices_history = {d: existing_indices[d] for d in all_idx_dates[:400]}
+
+firebase_db.reference('/v1/us').set({
+    'updated': valid_dates[0], 'collected_at': collected_at,
+    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
+    'indices': indices_history
+})
+print(f'[US] 완료! ({time.time()-t0:.0f}초)')
