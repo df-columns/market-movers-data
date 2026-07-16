@@ -292,14 +292,30 @@ def call_claude(prompt):
 
 # ── 메인 ────────────────────────────────────────────────────────────────────────
 def inject_timestamp(html, ts):
-    """리포트 HTML 우측 상단에 생성 완료 시각 배지 삽입"""
+    """흰 A4 용지(.page) 컨테이너 안쪽 우측 상단에 생성 완료 시각 배지 삽입"""
     badge = (
-        '<div style="position:fixed;top:6px;right:10px;z-index:99999;font-size:8pt;'
-        'color:#64748b;font-family:sans-serif;background:rgba(255,255,255,.85);'
-        f'padding:2px 8px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.12)">🕒 생성 {ts} KST</div>'
+        '<div style="position:absolute;top:10mm;right:10mm;z-index:50;font-size:8pt;'
+        'color:#64748b;font-family:sans-serif;background:rgba(255,255,255,.9);'
+        f'padding:2px 8px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.10)">🕒 생성 {ts} KST</div>'
     )
-    m = re.search(r'<body[^>]*>', html, re.I)
-    return (html[:m.end()] + badge + html[m.end():]) if m else (badge + html)
+    # 흰 용지 컨테이너 후보: 인라인 width:210mm 또는 class에 page 포함
+    m = re.search(
+        r'<div[^>]*(?:210mm|class\s*=\s*["\'][^"\']*\bpage\b[^"\']*["\'])[^>]*>',
+        html, re.I
+    )
+    if m:
+        tag = m.group(0)
+        # 배지 absolute 기준이 되도록 컨테이너에 position:relative 보장
+        if 'position:relative' not in tag.replace(' ', ''):
+            new_tag = re.sub(r'style\s*=\s*(["\'])', r'style=\1position:relative;', tag, count=1, flags=re.I)
+            if new_tag == tag:  # style 속성이 없으면 새로 추가
+                new_tag = tag[:-1] + ' style="position:relative">'
+            tag = new_tag
+        return html[:m.start()] + tag + badge + html[m.end():]
+    # 폴백: 컨테이너를 못 찾으면 body 뒤에 fixed 로
+    m2 = re.search(r'<body[^>]*>', html, re.I)
+    fixed = badge.replace('position:absolute;top:10mm;right:10mm', 'position:fixed;top:6px;right:10px', 1)
+    return (html[:m2.end()] + fixed + html[m2.end():]) if m2 else (fixed + html)
 
 
 def main():
