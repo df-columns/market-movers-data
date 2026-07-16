@@ -64,21 +64,54 @@ def test_jp_yfinance():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) 중국 — akshare로 A주 전체 목록(코드+이름+시총) 되는지
+# 3-A) 중국 — Yahoo 스크리너(yfinance)로 유니버스+시총 한 번에 (미국 Nasdaq 대체)
 # ─────────────────────────────────────────────────────────────────────────────
-def test_cn_akshare():
-    try:
-        import akshare as ak
-    except ImportError:
-        print('  akshare 미설치 (requirements에 추가 필요)')
-        return
-    # 상하이+선전 실시간 스냅샷 (코드/이름/시총 포함)
-    df = ak.stock_zh_a_spot_em()
-    print(f'  컬럼: {list(df.columns)}')
-    print(f'  총 종목수: {len(df):,}')
-    print('  --- 샘플 10개 ---')
-    show = [c for c in df.columns if c in ('代码', '名称', '总市值', '最新价')]
-    print(df[show].head(10).to_string() if show else df.head(10).to_string())
+def test_cn_yahoo_screener():
+    import yfinance as yf
+    from yfinance import EquityQuery
+    # 상하이(.SS)+선전(.SZ)=region 'cn', 홍콩(.HK)=region 'hk' 를 함께
+    q = EquityQuery('and', [
+        EquityQuery('or', [
+            EquityQuery('eq', ['region', 'cn']),
+            EquityQuery('eq', ['region', 'hk']),
+        ]),
+        EquityQuery('gt', ['intradaymarketcap', 10_000_000_000]),  # 테스트용 넉넉히
+    ])
+    res = yf.screen(q, size=250, sortField='intradaymarketcap', sortAsc=False)
+    quotes = res.get('quotes', []) if isinstance(res, dict) else []
+    total = res.get('total') if isinstance(res, dict) else None
+    print(f'  반환 {len(quotes)}건 (전체 매칭 total={total}, 요청당 최대 250)')
+    # 거래소 접미사 분포 (.SS 상하이 / .SZ 선전 / .HK 홍콩)
+    from collections import Counter
+    suf = Counter((s.get('symbol', '').split('.')[-1] if '.' in s.get('symbol', '') else '?') for s in quotes)
+    print(f'  거래소 분포: {dict(suf)}')
+    print('  --- 샘플 12개 (심볼 / 이름 / 시총) ---')
+    for q_ in quotes[:12]:
+        sym = q_.get('symbol')
+        nm = q_.get('shortName') or q_.get('longName')
+        mc = q_.get('marketCap')
+        print(f'    {sym}  {nm}  mktcap={mc:,}' if mc else f'    {sym}  {nm}  mktcap=?')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3-B) 일본 — Yahoo 스크리너(yfinance)로 유니버스+시총 (되면 JPX도 불필요)
+# ─────────────────────────────────────────────────────────────────────────────
+def test_jp_yahoo_screener():
+    import yfinance as yf
+    from yfinance import EquityQuery
+    q = EquityQuery('and', [
+        EquityQuery('eq', ['region', 'jp']),
+        EquityQuery('gt', ['intradaymarketcap', 100_000_000_000]),  # 1000억 JPY+ (테스트용)
+    ])
+    res = yf.screen(q, size=50, sortField='intradaymarketcap', sortAsc=False)
+    quotes = res.get('quotes', []) if isinstance(res, dict) else []
+    print(f'  총 반환(최대 50): {len(quotes)}건')
+    print('  --- 샘플 10개 (심볼 / 이름 / 시총) ---')
+    for q_ in quotes[:10]:
+        sym = q_.get('symbol')
+        nm = q_.get('shortName') or q_.get('longName')
+        mc = q_.get('marketCap')
+        print(f'    {sym}  {nm}  mktcap={mc:,}' if mc else f'    {sym}  {nm}  mktcap=?')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,8 +136,10 @@ if __name__ == '__main__':
     safe(test_jp_jpx)
     hr('2. 일본 — yfinance 가격/시총 샘플')
     safe(test_jp_yfinance)
-    hr('3. 중국 — akshare A주 전체목록 (코드+이름+시총)')
-    safe(test_cn_akshare)
+    hr('3-A. 중국 — Yahoo 스크리너 유니버스+시총 (미국 Nasdaq 대체)')
+    safe(test_cn_yahoo_screener)
+    hr('3-B. 일본 — Yahoo 스크리너 유니버스+시총 (되면 JPX 불필요)')
+    safe(test_jp_yahoo_screener)
     hr('4. 중국 — yfinance 개별종목 샘플')
     safe(test_cn_yfinance)
     print(f'\n완료 ({time.time()-t0:.0f}초)')
