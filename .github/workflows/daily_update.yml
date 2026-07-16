@@ -2,7 +2,7 @@ name: Daily Market Data Update
 
 on:
   schedule:
-    - cron: '*/5 * * * *'    # 5분마다
+    - cron: '*/5 * * * *'    # 5분마다 (public 저장소 무제한)
   workflow_dispatch:           # 수동 실행 버튼
 
 jobs:
@@ -27,3 +27,18 @@ jobs:
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: python fetch_us.py
+
+      - name: Fetch JP data
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python fetch_jp.py
+
+      - name: Fetch CN data
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python fetch_cn.py
+
+      - name: Fetch FX rates
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python fetch_fx.py
