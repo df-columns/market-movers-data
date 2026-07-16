@@ -2,16 +2,17 @@ name: Auto Claude Market Review
 
 on:
   schedule:
-    - cron: '40 6 * * 1-5'    # 국내: 월~금 15:40 KST (= 06:40 UTC)
-    - cron: '30 21 * * 1-5'   # 해외: 화~토 06:30 KST (= 전날 21:30 UTC)
+    - cron: '40 6 * * 1-5'    # 국내+일본: 월~금 15:40 KST (= 06:40 UTC)
+    - cron: '30 21 * * 1-5'   # 미국: 화~토 06:30 KST (= 전날 21:30 UTC)
+    - cron: '10 8 * * 1-5'    # 중국(홍콩 마감 기준): 월~금 17:10 KST (= 08:10 UTC)
   workflow_dispatch:           # 수동 실행 버튼
     inputs:
       market:
-        description: '분석할 시장 (kr = 국내 / us = 해외)'
+        description: '분석할 시장 (kr 국내 / us 미국 / jp 일본 / cn 중국)'
         required: true
         default: 'kr'
         type: choice
-        options: [kr, us]
+        options: [kr, us, jp, cn]
 
 jobs:
   review:
@@ -26,19 +27,25 @@ jobs:
       - name: Install packages
         run: pip install -r requirements.txt
 
-      - name: Determine market
+      - name: Determine markets
         id: mkt
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "market=${{ github.event.inputs.market }}" >> "$GITHUB_OUTPUT"
+            echo "markets=${{ github.event.inputs.market }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.schedule }}" = "40 6 * * 1-5" ]; then
-            echo "market=kr" >> "$GITHUB_OUTPUT"
+            echo "markets=kr jp" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 21 * * 1-5" ]; then
+            echo "markets=us" >> "$GITHUB_OUTPUT"
           else
-            echo "market=us" >> "$GITHUB_OUTPUT"
+            echo "markets=cn" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Generate & publish review
+      - name: Generate & publish reviews
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python generate_review.py --market ${{ steps.mkt.outputs.market }}
+        run: |
+          for m in ${{ steps.mkt.outputs.markets }}; do
+            echo "=================== $m ==================="
+            python generate_review.py --market "$m" || echo "::warning::$m 리뷰 실패"
+          done
