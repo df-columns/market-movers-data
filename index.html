@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>시장과 호흡하라 — Daily Movers</title>
+<title>시장과 호흡하라 — Smooth Shin</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Apple SD Gothic Neo','Noto Sans KR',sans-serif;background:#f0f4f8;color:#1e293b;min-height:100vh;padding:28px 20px}
@@ -353,12 +353,12 @@ table{min-width:660px}
       <label>기준 기간</label>
       <div class="pills" id="pills"></div>
     </div>
-    <div class="ctrl-group">
+    <div class="ctrl-group" style="margin-left:auto">
       <label>시총 단위</label>
       <div class="pills" id="ccyPills">
-        <button class="pill active" data-ccy="local">현지</button>
-        <button class="pill" data-ccy="krw">원 ₩</button>
-        <button class="pill" data-ccy="usd">달러 $</button>
+        <button class="pill active" data-ccy="local">Default</button>
+        <button class="pill" data-ccy="krw">KRW</button>
+        <button class="pill" data-ccy="usd">USD</button>
       </div>
     </div>
   </div>
@@ -450,7 +450,7 @@ const MARKETS = {
   kr: { idx: ['kospi', 'kospi200', 'kosdaq'] },
   us: { idx: ['sp500', 'ndx100', 'dji30'] },
   jp: { idx: ['n225', 'topix'] },
-  cn: { idx: ['shcomp', 'csi300', 'hsi'] },
+  cn: { idx: ['csi300', 'hsi'] },
 };
 let STOCKS, DATES, PRICES;
 let tradingSet, dateToIdx, minY, minM, maxY, maxM;
@@ -461,7 +461,7 @@ const US_EXCLUDE  = new Set(['GOOGL', 'GOOGM', 'GOOGN']);  // 미국: 중복 클
 let selDateIdx = 0, selPeriod = "1D";
 let capSort = { key: 'mktcap', dir: 'desc' };   // 시가총액 표 정렬 상태
 let capCcy = 'local';                            // 시총 표시 통화: local | krw | usd
-let fxRates = null;                              // { KRW:1, USD:.., JPY:.., CNY:.., HKD:.. } (1단위의 원화값)
+let fxRates = { KRW: 1, USD: 1380, JPY: 9.1, CNY: 190, HKD: 177 };  // 기본 근사환율 (/v1/fx 로드되면 최신값으로 대체)
 let calYear, calMonth, calOpen = false;
 let uiInitialized = false;
 
@@ -734,7 +734,7 @@ function switchToData(data) {
   calYear = y; calMonth = m;
   document.getElementById('dateInput').value = effDate;
   document.getElementById('dateField').classList.remove('invalid');
-  document.querySelectorAll('.pill').forEach(b =>
+  document.querySelectorAll('#pills .pill').forEach(b =>
     b.classList.toggle('active', b.textContent === selPeriod));
 }
 
@@ -836,7 +836,7 @@ function setupUI() {
     b.textContent = p;
     b.addEventListener('click', () => {
       selPeriod = p;
-      document.querySelectorAll('.pill').forEach(x => x.classList.toggle('active', x.textContent===p));
+      document.querySelectorAll('#pills .pill').forEach(x => x.classList.toggle('active', x.textContent===p));
       render();
     });
     pd.appendChild(b);
