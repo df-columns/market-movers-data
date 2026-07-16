@@ -24,7 +24,11 @@ MARKET       = 'jp'
 REGIONS      = ['jp']          # Yahoo 지역 코드
 TOP_N        = 200             # 시총 상위 N종목
 HISTORY_DAYS = 400
-INDEX_DEFS   = [('^N225', 'Nikkei 225', 'n225'), ('^TPX', 'TOPIX', 'topix')]
+# 지수: (후보 심볼 리스트, 표시명, 키) — 앞에서부터 데이터 있는 심볼 사용
+INDEX_DEFS   = [
+    (['^N225'], 'Nikkei 225', 'n225'),
+    (['^TPX', '^TOPX', '998405.T', '1306.T'], 'TOPIX', 'topix'),
+]
 
 t0 = time.time()
 
@@ -117,21 +121,25 @@ for date in valid_dates:
 # ── 6. 지수 수집 ───────────────────────────────────────────────────────────────
 print(f'\n[{MARKET.upper()}] 지수 수집 중...')
 indices = {}
-for sym, name, key in INDEX_DEFS:
-    try:
-        hist = yf.Ticker(sym).history(period='5d')
-        if len(hist) >= 2:
-            curr = float(hist['Close'].iloc[-1])
-            prev = float(hist['Close'].iloc[-2])
-            chg = curr - prev
-            pct = chg / prev * 100
-            indices[key] = {'name': name, 'value': round(curr, 2),
-                            'change': round(chg, 2), 'changePct': round(pct, 4)}
-            print(f'  {name}: {curr:,.2f} ({chg:+.2f}, {pct:+.2f}%)')
-        else:
-            print(f'  [WARN] {sym}: 데이터 부족')
-    except Exception as e:
-        print(f'  [WARN] {sym}: {e}')
+for syms, name, key in INDEX_DEFS:
+    got = False
+    for sym in syms:
+        try:
+            hist = yf.Ticker(sym).history(period='5d')
+            if len(hist) >= 2:
+                curr = float(hist['Close'].iloc[-1])
+                prev = float(hist['Close'].iloc[-2])
+                chg = curr - prev
+                pct = chg / prev * 100
+                indices[key] = {'name': name, 'value': round(curr, 2),
+                                'change': round(chg, 2), 'changePct': round(pct, 4)}
+                print(f'  {name} ({sym}): {curr:,.2f} ({chg:+.2f}, {pct:+.2f}%)')
+                got = True
+                break
+        except Exception as e:
+            print(f'  [WARN] {sym}: {e}')
+    if not got:
+        print(f'  [WARN] {name}: 후보 심볼 모두 실패 {syms}')
 
 # ── 7. Firebase 업로드 ─────────────────────────────────────────────────────────
 print(f'\n[{MARKET.upper()}] Firebase 업로드 중...')
