@@ -181,7 +181,11 @@ def build_prompt(market, date, idx_data, top10, bot10):
 특히 "등락 배경"은 {date} 전후의 실제 뉴스·공시·이슈를 근거로 작성해줘.
 
 반드시 아래 조건을 모두 지켜줘:
-1. 결과를 반드시 완전한 HTML 문서로 출력해줘. <!DOCTYPE html>부터 </html>까지 하나의 독립 실행 HTML 파일로 작성해줘 (외부 CDN, 외부 폰트 링크 없이 인라인 스타일만 사용). 그 자체로 더블클릭하면 바로 열리는 완성된 파일이어야 해. 다른 설명 텍스트 없이 HTML만 출력해줘.
+1. ★★★ 가장 중요 ★★★ 너는 파일을 만들 수 없고, 아티팩트도 만들 수 없어. 웹 검색이 모두 끝나면, 너의 응답 본문(텍스트)에 완성된 HTML 문서 전체를 직접 써야 해.
+   • 응답은 반드시 `<!DOCTYPE html>` 로 시작해서 `</html>` 로 끝나야 해.
+   • "파일을 만들었다", "생성했다", "완성했습니다" 같은 설명 문장을 절대 쓰지 마. 인사말·머리말·꼬리말·요약 없이 오직 HTML 코드만 출력해.
+   • 코드블록(```)으로 감싸도 되고 안 감싸도 되지만, HTML 문서 전체가 응답 안에 실제로 들어 있어야 해.
+   • 외부 CDN·외부 폰트 링크 없이 인라인 스타일만 사용. 그 자체로 더블클릭하면 바로 열리는 완성된 파일이어야 해.
 2. 화면에서도, 인쇄할 때도 A4 세로(portrait) 1장 비율로 보이게 설계해줘.
    • 화면: 회색(#e2e8f0 등) 배경 가운데에, 가로 210mm · 세로 297mm 의 흰색 A4 용지 한 장이 놓인 것처럼 보이게 해줘. (페이지 컨테이너 width:210mm; min-height:297mm; margin:0 auto; padding:10mm; background:#fff; box-shadow 로 종이 느낌)
    • CSS에 반드시 아래 포함:
@@ -246,6 +250,15 @@ def extract_html(text):
 
 
 # ── Claude API 호출 (웹 검색 도구 사용) ─────────────────────────────────────────
+SYSTEM_PROMPT = (
+    "너는 HTML 마켓 리포트 생성기다. 웹 검색으로 사실을 확인한 뒤, "
+    "너의 응답은 오직 하나의 완전한 HTML 문서여야 한다. "
+    "너에게는 파일 시스템도 아티팩트 기능도 없다 — 파일을 만들 수 없다. "
+    "'파일을 생성했다/완성했습니다' 같은 말은 절대 하지 말고, 어떤 설명 문장도 없이 "
+    "응답 본문에 `<!DOCTYPE html>`로 시작해 `</html>`로 끝나는 HTML 코드 자체를 직접 출력하라."
+)
+
+
 def call_claude(prompt):
     client = anthropic.Anthropic()  # ANTHROPIC_API_KEY 환경변수 사용
     tools = [{"type": "web_search_20260209", "name": "web_search"}]
@@ -256,6 +269,7 @@ def call_claude(prompt):
         with client.messages.stream(
             model=CLAUDE_MODEL,
             max_tokens=32000,
+            system=SYSTEM_PROMPT,
             thinking={"type": "adaptive"},
             tools=tools,
             messages=messages,
@@ -312,8 +326,11 @@ def main():
     html = extract_html(raw)
     if not html:
         print('[ERROR] Claude 응답에서 HTML을 추출하지 못했습니다.')
-        print('--- 응답 앞부분 ---')
-        print(raw[:500])
+        print(f'--- 응답 길이: {len(raw):,}자 ---')
+        print('--- 응답 앞 1000자 ---')
+        print(raw[:1000])
+        print('--- 응답 뒤 500자 ---')
+        print(raw[-500:])
         sys.exit(1)
 
     payload = {
