@@ -19,8 +19,14 @@ DATABASE_URL = 'https://market-movers-75461-default-rtdb.asia-southeast1.firebas
 CLAUDE_MODEL = 'claude-opus-4-8'
 KST = timezone(timedelta(hours=9))
 
-# HTML의 KR_ORDER / US_ORDER 와 동일
-IDX_ORDER = {'kr': ['kospi', 'kospi200', 'kosdaq'], 'us': ['sp500', 'ndx100', 'dji30']}
+# HTML의 시장별 지수 순서와 동일
+IDX_ORDER = {
+    'kr': ['kospi', 'kospi200', 'kosdaq'],
+    'us': ['sp500', 'ndx100', 'dji30'],
+    'jp': ['n225', 'topix'],
+    'cn': ['csi300', 'hsi'],
+}
+MARKET_NAME = {'kr': '한국', 'us': '미국', 'jp': '일본', 'cn': '중국'}
 
 
 # ── Firebase 초기화 ────────────────────────────────────────────────────────────
@@ -84,7 +90,7 @@ def get_idx_for_date(indices, date):
 
 # ── 프롬프트 생성 (HTML의 generateClaudePrompt, 기준기간 1D 고정) ────────────────
 def build_prompt(market, date, idx_data, top10, bot10):
-    market_name = '미국' if market == 'us' else '한국'
+    market_name = MARKET_NAME.get(market, market)
 
     index_section = ''
     idx_cards_instruction = ''
@@ -140,25 +146,23 @@ def build_prompt(market, date, idx_data, top10, bot10):
             "• 카드 아래 시장 흐름 설명 2~3줄 (8pt)"
         )
     else:
-        if market == 'us':
-            idx_cards_instruction = (
-                "• S&P500, NASDAQ100, Dow30 일간 등락률을 직접 조회해서 수치와 함께 가로 한 줄 카드로 표시\n"
-                "• 카드: padding 6px 14px, 지수값 13pt, 변동률 9.5pt 볼드, 같은 줄에 나란히\n"
-                "• 상승 bg #f0fdf4 / border #86efac / 글씨 #16a34a, 하락 bg #fff1f2 / border #fca5a5 / 글씨 #dc2626\n"
-                "• 카드 아래 시장 흐름 설명 2~3줄"
-            )
-        else:
-            idx_cards_instruction = (
-                "• 코스피, KOSPI 200, 코스닥 일간 등락률을 직접 조회해서 수치와 함께 가로 한 줄 카드로 표시\n"
-                "• 카드: padding 6px 14px, 지수값 13pt, 변동률 9.5pt 볼드, 같은 줄에 나란히\n"
-                "• 상승 bg #f0fdf4 / border #86efac / 글씨 #16a34a, 하락 bg #fff1f2 / border #fca5a5 / 글씨 #dc2626\n"
-                "• 카드 아래 시장 흐름 설명 2~3줄"
-            )
+        idx_hint = {
+            'us': 'S&P500, NASDAQ100, Dow30',
+            'kr': '코스피, KOSPI 200, 코스닥',
+            'jp': 'Nikkei 225, TOPIX',
+            'cn': 'CSI 300, 항셍(Hang Seng)',
+        }.get(market, '해당 시장 주요 지수')
+        idx_cards_instruction = (
+            f"• {idx_hint} 일간 등락률을 직접 조회해서 수치와 함께 가로 한 줄 카드로 표시\n"
+            "• 카드: padding 6px 14px, 지수값 13pt, 변동률 9.5pt 볼드, 같은 줄에 나란히\n"
+            "• 상승 bg #f0fdf4 / border #86efac / 글씨 #16a34a, 하락 bg #fff1f2 / border #fca5a5 / 글씨 #dc2626\n"
+            "• 카드 아래 시장 흐름 설명 2~3줄"
+        )
 
     col_header = (
-        "| Ticker | 종목명 | 등락률 | 회사 소개 (2문장: ①핵심사업 ②주요고객·경쟁우위) | 등락 배경 |"
-        if market == 'us'
-        else "| 종목코드 | 종목명 | 등락률 | 회사 소개 (2문장: ①핵심사업 ②주요고객·경쟁우위) | 등락 배경 |"
+        "| 종목코드 | 종목명 | 등락률 | 회사 소개 (2문장: ①핵심사업 ②주요고객·경쟁우위) | 등락 배경 |"
+        if market == 'kr'
+        else "| Ticker | 종목명 | 등락률 | 회사 소개 (2문장: ①핵심사업 ②주요고객·경쟁우위) | 등락 배경 |"
     )
 
     top_lines = "\n".join(f"{i + 1}. {s['code']} / {s['name']} / {fmt_ret(s['ret'])}" for i, s in enumerate(top10))
@@ -288,7 +292,7 @@ def call_claude(prompt):
 # ── 메인 ────────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--market', required=True, choices=['kr', 'us'])
+    ap.add_argument('--market', required=True, choices=['kr', 'us', 'jp', 'cn'])
     args = ap.parse_args()
     market = args.market
 
