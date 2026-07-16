@@ -22,6 +22,11 @@ except ValueError:
 HISTORY_DAYS = 400
 USD_20B = 20_000_000_000
 
+# 중복 클래스주·우선주 등 제외할 티커
+#   GOOGL: GOOG(알파벳 Class C)와 중복 → GOOG만 유지
+#   GOOGM, GOOGN: 우선주/특수 클래스 → 제외
+EXCLUDE_TICKERS = {'GOOGL', 'GOOGM', 'GOOGN'}
+
 print('[US] 종목 리스트 수집 중...')
 t0 = time.time()
 
@@ -49,6 +54,8 @@ def get_tickers_via_nasdaq():
             sym = (row.get('symbol') or '').strip()
             if not sym or not all(c.isalpha() or c == '-' for c in sym):
                 continue  # 우선주·워런트·ETF 등 특수기호 제거
+            if sym in EXCLUDE_TICKERS:
+                continue  # 중복 클래스주·우선주 제외
             mc_str = (row.get('marketCap') or '').replace(',', '').strip()
             try:
                 mc = int(float(mc_str)) if mc_str else 0
@@ -71,7 +78,7 @@ except Exception as e:
 if not tickers:
     print('  [FALLBACK] 백업 리스트 사용')
     BACKUP = [
-        'AAPL','MSFT','NVDA','AMZN','GOOGL','GOOG','META','TSLA','BRK-B','AVGO',
+        'AAPL','MSFT','NVDA','AMZN','GOOG','META','TSLA','BRK-B','AVGO',
         'JPM','V','MA','UNH','XOM','LLY','JNJ','WMT','COST','HD','PG','ABBV',
         'BAC','NFLX','MRK','ORCL','CRM','AMD','CVX','TMO','KO','PEP','ACN',
         'MCD','ABT','GS','MS','IBM','CSCO','QCOM','TXN','INTU','ADBE','NOW',
