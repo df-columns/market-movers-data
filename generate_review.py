@@ -205,6 +205,11 @@ def build_prompt(market, date, idx_data, top10, bot10):
 
 전체 톤: 금융 리포트 스타일. 단정하고 읽기 쉽게. 색깔 과하지 않게.
 
+[제목·메타 줄]
+• 제목("데일리 마켓 브리핑 · {market_name} 증시") 바로 아래 메타 줄을 좌우 양끝 배치(display:flex; justify-content:space-between; align-items:baseline)
+• 왼쪽: 기준일 {date} · 기준 기간 1D · 시장 {market_name} (기존 스타일 그대로, 회색 #64748b)
+• 오른쪽: 왼쪽과 완전히 동일한 글씨크기·동일한 회색(#64748b)으로 "🕒 생성 __GEN_TIME__ KST" 텍스트만 표시. 배경상자·테두리·그림자 절대 금지. __GEN_TIME__ 은 그대로 두면 됨(자동 치환됨).
+
 [레이아웃]
 • 각 섹션은 흰 배경 + 연한 테두리(#e2e8f0)의 카드 박스로 구분
 • 섹션 헤더는 네이비(#1e3a5f) 배경에 흰 글씨, 좌측 굵은 바(accent line) 포함
@@ -292,30 +297,17 @@ def call_claude(prompt):
 
 # ── 메인 ────────────────────────────────────────────────────────────────────────
 def inject_timestamp(html, ts):
-    """흰 A4 용지(.page) 컨테이너 안쪽 우측 상단에 생성 완료 시각 배지 삽입"""
-    badge = (
-        '<div style="position:absolute;top:10mm;right:10mm;z-index:50;font-size:8pt;'
-        'color:#64748b;font-family:sans-serif;background:rgba(255,255,255,.9);'
-        f'padding:2px 8px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.10)">🕒 생성 {ts} KST</div>'
+    """기준일 메타 줄 오른쪽 끝에 생성 완료 시각을 같은 텍스트 스타일로 표시"""
+    # 1순위: 프롬프트가 심어둔 플레이스홀더를 실제 완료 시각으로 치환
+    if '__GEN_TIME__' in html:
+        return html.replace('__GEN_TIME__', ts)
+    # 폴백: 플레이스홀더가 없으면 화면 우측 상단에 소박한 텍스트로
+    fallback = (
+        '<div style="position:fixed;top:6px;right:12px;z-index:50;font-size:8pt;'
+        f'color:#64748b;font-family:sans-serif">🕒 생성 {ts} KST</div>'
     )
-    # 흰 용지 컨테이너 후보: 인라인 width:210mm 또는 class에 page 포함
-    m = re.search(
-        r'<div[^>]*(?:210mm|class\s*=\s*["\'][^"\']*\bpage\b[^"\']*["\'])[^>]*>',
-        html, re.I
-    )
-    if m:
-        tag = m.group(0)
-        # 배지 absolute 기준이 되도록 컨테이너에 position:relative 보장
-        if 'position:relative' not in tag.replace(' ', ''):
-            new_tag = re.sub(r'style\s*=\s*(["\'])', r'style=\1position:relative;', tag, count=1, flags=re.I)
-            if new_tag == tag:  # style 속성이 없으면 새로 추가
-                new_tag = tag[:-1] + ' style="position:relative">'
-            tag = new_tag
-        return html[:m.start()] + tag + badge + html[m.end():]
-    # 폴백: 컨테이너를 못 찾으면 body 뒤에 fixed 로
-    m2 = re.search(r'<body[^>]*>', html, re.I)
-    fixed = badge.replace('position:absolute;top:10mm;right:10mm', 'position:fixed;top:6px;right:10px', 1)
-    return (html[:m2.end()] + fixed + html[m2.end():]) if m2 else (fixed + html)
+    m = re.search(r'<body[^>]*>', html, re.I)
+    return (html[:m.end()] + fallback + html[m.end():]) if m else (fallback + html)
 
 
 def main():
