@@ -371,7 +371,7 @@ table{min-width:660px}
   </div>
 
   <div class="section">
-    <div class="sec-title"><span class="badge badge-up">▲ 상승률</span> <span id="sec-up-title">일간 상승률 TOP 10</span></div>
+    <div class="sec-title"><span class="badge badge-up">▲ 상승률</span> <span id="sec-up-title">상승률 TOP10</span></div>
     <div class="tbl-wrap">
       <table>
         <colgroup><col class="c-rank"><col class="c-code"><col class="c-name"><col class="c-cap"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"></colgroup>
@@ -387,7 +387,7 @@ table{min-width:660px}
     </div>
   </div>
   <div class="section">
-    <div class="sec-title"><span class="badge badge-dn">▼ 하락률</span> <span id="sec-dn-title">일간 하락률 TOP 10</span></div>
+    <div class="sec-title"><span class="badge badge-dn">▼ 하락률</span> <span id="sec-dn-title">하락률 TOP10</span></div>
     <div class="tbl-wrap">
       <table>
         <colgroup><col class="c-rank"><col class="c-code"><col class="c-name"><col class="c-cap"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"></colgroup>
@@ -403,7 +403,7 @@ table{min-width:660px}
     </div>
   </div>
   <div class="section">
-    <div class="sec-title"><span class="badge badge-cap">💰 시가총액</span> <span id="sec-cap-title">시가총액 상위 30종목</span> <span style="font-size:11px;font-weight:500;color:#94a3b8">— 헤더 클릭으로 정렬</span></div>
+    <div class="sec-title"><span class="badge badge-cap">💰 시가총액</span> <span id="sec-cap-title">시가총액 상위 30종목</span></div>
     <div class="tbl-wrap">
       <table id="capTable">
         <colgroup><col class="c-rank"><col class="c-code"><col class="c-name"><col class="c-cap"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"></colgroup>
@@ -583,10 +583,10 @@ function updateColumnHeaders() {
   document.querySelectorAll('.th-code').forEach(th => th.textContent = codeLabel);
   document.querySelectorAll('.th-name').forEach(th => th.textContent = nameLabel);
   document.querySelectorAll('.th-cap-hd').forEach(th => th.textContent = capLabel);
-  document.getElementById('sec-up-title').textContent = isUS ? 'Daily Gainers TOP 10' : '일간 상승률 TOP 10';
-  document.getElementById('sec-dn-title').textContent = isUS ? 'Daily Losers TOP 10'  : '일간 하락률 TOP 10';
+  document.getElementById('sec-up-title').textContent = '상승률 TOP10';
+  document.getElementById('sec-dn-title').textContent = '하락률 TOP10';
   const capTitle = document.getElementById('sec-cap-title');
-  if (capTitle) capTitle.textContent = isUS ? 'Top 30 by Market Cap' : '시가총액 상위 30종목';
+  if (capTitle) capTitle.textContent = '시가총액 상위 30종목';
 }
 function renderTop30() {
   const tb = document.getElementById('tbody-cap');
