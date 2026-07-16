@@ -290,6 +290,17 @@ def call_claude(prompt):
 
 
 # ── 메인 ────────────────────────────────────────────────────────────────────────
+def inject_timestamp(html, ts):
+    """리포트 HTML 우측 상단에 생성 완료 시각 배지 삽입"""
+    badge = (
+        '<div style="position:fixed;top:6px;right:10px;z-index:99999;font-size:8pt;'
+        'color:#64748b;font-family:sans-serif;background:rgba(255,255,255,.85);'
+        f'padding:2px 8px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.12)">🕒 생성 {ts} KST</div>'
+    )
+    m = re.search(r'<body[^>]*>', html, re.I)
+    return (html[:m.end()] + badge + html[m.end():]) if m else (badge + html)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--market', required=True, choices=['kr', 'us', 'jp', 'cn'])
@@ -337,9 +348,11 @@ def main():
         print(raw[-500:])
         sys.exit(1)
 
+    ts = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
+    html = inject_timestamp(html, ts)   # 리포트 우측 상단에 생성 시각 표시
     payload = {
         'html': html,
-        'updated_at': datetime.now(KST).strftime('%Y-%m-%d %H:%M'),
+        'updated_at': ts,
         'base_date': date,
     }
 
