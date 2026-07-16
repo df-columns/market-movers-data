@@ -68,6 +68,7 @@ header h1{font-size:20px;font-weight:800;letter-spacing:-.4px;color:#0f172a}
 .badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px}
 .badge-up{background:#dcfce7;color:#16a34a;border:1px solid #86efac}
 .badge-dn{background:#fee2e2;color:#dc2626;border:1px solid #fca5a5}
+.badge-cap{background:#e0e7ff;color:#4338ca;border:1px solid #a5b4fc}
 .tbl-wrap{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.07);overflow-x:auto}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c-rank{width:50px}col.c-code{width:96px}col.c-name{width:150px}
@@ -83,9 +84,13 @@ td{padding:9px 10px;font-size:13px;text-align:right;white-space:nowrap;overflow:
 td.td-rank{text-align:left}
 td.td-code{font-family:'Courier New',monospace;font-size:11px;color:#94a3b8;text-align:left}
 td.td-name{font-weight:600;color:#1e293b;text-align:left}
+.td-name .cell-scroll{display:block;overflow-x:auto;overflow-y:hidden;white-space:nowrap;scrollbar-width:none;-ms-overflow-style:none}
+.td-name .cell-scroll::-webkit-scrollbar{height:0;background:transparent}
 td.td-cap{font-size:11px;color:#64748b;text-align:right;white-space:nowrap}
 .rank{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;font-size:11px;font-weight:800}
 .rank-up{background:#dcfce7;color:#16a34a}.rank-dn{background:#fee2e2;color:#dc2626}
+.rank-neutral{background:#e2e8f0;color:#475569}
+#capTable thead th.cap-sort-active{color:#4338ca;border-bottom:2px solid #4338ca}
 .ret{display:inline-block;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;min-width:60px;text-align:right}
 .pos{color:#16a34a}.neg{color:#dc2626}.zero{color:#94a3b8}
 .h1u{background:rgba(22,163,74,.07)}.h2u{background:rgba(22,163,74,.14)}.h3u{background:rgba(22,163,74,.23)}.h4u{background:rgba(22,163,74,.35)}
@@ -387,6 +392,22 @@ table{min-width:660px}
       </table>
     </div>
   </div>
+  <div class="section">
+    <div class="sec-title"><span class="badge badge-cap">💰 시가총액</span> <span id="sec-cap-title">시가총액 상위 30종목</span> <span style="font-size:11px;font-weight:500;color:#94a3b8">— 헤더 클릭으로 정렬</span></div>
+    <div class="tbl-wrap">
+      <table id="capTable">
+        <colgroup><col class="c-rank"><col class="c-code"><col class="c-name"><col class="c-cap"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"><col class="c-per"></colgroup>
+        <thead><tr>
+          <th class="th-l">#</th><th class="th-l th-code">종목코드</th><th class="th-l th-name">종목명</th><th class="th-cap-hd">시가총액</th>
+          <th class="th-period" data-col="1D">1D</th><th class="th-period" data-col="1W">1W</th>
+          <th class="th-period" data-col="2W">2W</th><th class="th-period" data-col="1M">1M</th>
+          <th class="th-period" data-col="3M">3M</th><th class="th-period" data-col="6M">6M</th>
+          <th class="th-period" data-col="1Y">1Y</th>
+        </tr></thead>
+        <tbody id="tbody-cap"></tbody>
+      </table>
+    </div>
+  </div>
   <footer id="footer"></footer>
 </div>
 
@@ -420,7 +441,9 @@ let tradingSet, dateToIdx, minY, minM, maxY, maxM;
 
 const PERIOD_KEYS = ["1D","1W","2W","1M","3M","6M","1Y"];
 const OFFSETS     = {"1D":1,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252};
+const US_EXCLUDE  = new Set(['GOOGL', 'GOOGM', 'GOOGN']);  // 미국: 중복 클래스주·우선주 제외 (GOOG만 유지)
 let selDateIdx = 0, selPeriod = "1D";
+let capSort = { key: 'mktcap', dir: 'desc' };   // 시가총액 표 정렬 상태
 let calYear, calMonth, calOpen = false;
 let uiInitialized = false;
 
@@ -479,6 +502,7 @@ function fmtRet(v) {
 function getTopBottom(di, pk) {
   const off = OFFSETS[pk], list = [];
   for (let i = 0; i < STOCKS.length; i++) {
+    if (isUS && US_EXCLUDE.has(STOCKS[i].c)) continue;
     const sr = calcRet(di, off, i);
     if (sr === null) continue;
     const rets = {};
@@ -499,13 +523,15 @@ function renderTbody(id, stocks, isUp) {
     }).join('');
     tb.insertAdjacentHTML('beforeend',
       `<tr><td class="td-rank"><span class="rank ${rc}">${i+1}</span></td>` +
-      `<td class="td-code">${s.code}</td><td class="td-name">${s.name}</td>` +
+      `<td class="td-code" title="${s.code}">${s.code}</td><td class="td-name" title="${s.name}"><span class="cell-scroll">${s.name}</span></td>` +
       `<td class="td-cap">${fmtCap(s.mktcap)}</td>${cols}</tr>`);
   });
 }
 function updateHeaders() {
-  document.querySelectorAll('.th-period').forEach(th =>
-    th.classList.toggle('sort-active', th.dataset.col === selPeriod));
+  document.querySelectorAll('.th-period').forEach(th => {
+    if (th.closest('#capTable')) return;   // 시가총액 표는 자체 정렬 표시 사용
+    th.classList.toggle('sort-active', th.dataset.col === selPeriod);
+  });
 }
 function updateSubtitle() {
   const base = DATES[selDateIdx], ci = selDateIdx + OFFSETS[selPeriod];
@@ -522,11 +548,63 @@ function updateColumnHeaders() {
   document.querySelectorAll('.th-cap-hd').forEach(th => th.textContent = capLabel);
   document.getElementById('sec-up-title').textContent = isUS ? 'Daily Gainers TOP 10' : '일간 상승률 TOP 10';
   document.getElementById('sec-dn-title').textContent = isUS ? 'Daily Losers TOP 10'  : '일간 하락률 TOP 10';
+  const capTitle = document.getElementById('sec-cap-title');
+  if (capTitle) capTitle.textContent = isUS ? 'Top 30 by Market Cap' : '시가총액 상위 30종목';
+}
+function renderTop30() {
+  const tb = document.getElementById('tbody-cap');
+  if (!tb) return;
+  const list = [];
+  for (let i = 0; i < STOCKS.length; i++) {
+    if (isUS && US_EXCLUDE.has(STOCKS[i].c)) continue;
+    const rets = {};
+    PERIOD_KEYS.forEach(p => { rets[p] = calcRet(selDateIdx, OFFSETS[p], i); });
+    list.push({ code: STOCKS[i].c, name: STOCKS[i].n, mktcap: STOCKS[i].m || 0, rets });
+  }
+  // 멤버십: 시가총액 상위 30종목 고정
+  list.sort((a, b) => b.mktcap - a.mktcap);
+  const top = list.slice(0, 30);
+  // 표시 순서: 선택 컬럼 기준 정렬 (기본 시가총액 내림차순)
+  const dir = capSort.dir === 'asc' ? 1 : -1;
+  top.sort((a, b) => {
+    const av = capSort.key === 'mktcap' ? a.mktcap : a.rets[capSort.key];
+    const bv = capSort.key === 'mktcap' ? b.mktcap : b.rets[capSort.key];
+    const an = av === null || av === undefined, bn = bv === null || bv === undefined;
+    if (an && bn) return 0;
+    if (an) return 1;    // 값 없는 종목(N/A)은 항상 맨 아래
+    if (bn) return -1;
+    return (av - bv) * dir;
+  });
+  tb.innerHTML = '';
+  top.forEach((s, i) => {
+    const cols = PERIOD_KEYS.map(p =>
+      `<td class="ret-cell" data-col="${p}">${fmtRet(s.rets[p])}</td>`).join('');
+    tb.insertAdjacentHTML('beforeend',
+      `<tr><td class="td-rank"><span class="rank rank-neutral">${i+1}</span></td>` +
+      `<td class="td-code" title="${s.code}">${s.code}</td><td class="td-name" title="${s.name}"><span class="cell-scroll">${s.name}</span></td>` +
+      `<td class="td-cap">${fmtCap(s.mktcap)}</td>${cols}</tr>`);
+  });
+  updateCapHeader();
+}
+function updateCapHeader() {
+  const capTable = document.getElementById('capTable');
+  if (!capTable) return;
+  const arrow = capSort.dir === 'desc' ? ' ▼' : ' ▲';
+  capTable.querySelectorAll('thead th').forEach(th => {
+    const key = th.classList.contains('th-cap-hd') ? 'mktcap'
+              : th.classList.contains('th-period') ? th.dataset.col : null;
+    th.classList.remove('cap-sort-active');
+    if (!key) return;
+    const base = key === 'mktcap' ? (isUS ? 'Mkt Cap' : '시가총액') : key;
+    th.textContent = base + (capSort.key === key ? arrow : '');
+    if (capSort.key === key) th.classList.add('cap-sort-active');
+  });
 }
 function render() {
   const { top10, bot10 } = getTopBottom(selDateIdx, selPeriod);
   renderTbody('tbody-up', top10, true);
   renderTbody('tbody-dn', bot10, false);
+  renderTop30();
   updateHeaders();
   updateSubtitle();
 }
@@ -728,6 +806,22 @@ function setupUI() {
   // 탭 버튼
   document.querySelectorAll('.tab-btn').forEach(btn =>
     btn.addEventListener('click', () => loadTab(btn.dataset.tab)));
+
+  // 시가총액 표 컬럼 정렬 (헤더 클릭)
+  const capTableEl = document.getElementById('capTable');
+  if (capTableEl) {
+    capTableEl.querySelectorAll('thead th').forEach(th => {
+      const key = th.classList.contains('th-cap-hd') ? 'mktcap'
+                : th.classList.contains('th-period') ? th.dataset.col : null;
+      if (!key) return;
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', () => {
+        if (capSort.key === key) capSort.dir = capSort.dir === 'desc' ? 'asc' : 'desc';
+        else { capSort.key = key; capSort.dir = 'desc'; }
+        renderTop30();
+      });
+    });
+  }
 
   // Claude 분석 버튼
   document.getElementById('btnClaude').addEventListener('click', () => runClaudeAnalysis());
