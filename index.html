@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>시장과 호흡하라 by Smooth Shin</title>
+<title>시장과 호흡하라 — Daily Movers</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Apple SD Gothic Neo','Noto Sans KR',sans-serif;background:#f0f4f8;color:#1e293b;min-height:100vh;padding:28px 20px}
@@ -305,14 +305,16 @@ table{min-width:660px}
 <div class="wrap">
   <header>
     <div class="hdr-title">
-      <h1>시장과 호흡하라 by Smooth Shin</h1>
+      <h1>시장과 호흡하라 — Smooth Shin</h1>
       <span class="subtitle" id="subtitle"></span>
       <span class="update-time" id="updateTime"></span>
     </div>
     <div class="hdr-right">
       <div class="tab-group">
         <button class="tab-btn active" data-tab="kr">🇰🇷 국내</button>
-        <button class="tab-btn" data-tab="us">🇺🇸 해외</button>
+        <button class="tab-btn" data-tab="us">🇺🇸 미국</button>
+        <button class="tab-btn" data-tab="jp">🇯🇵 일본</button>
+        <button class="tab-btn" data-tab="cn">🇨🇳 중국</button>
       </div>
       <div class="action-btns">
         <button class="btn-action btn-claude" id="btnClaude" style="display:none">🤖 Claude 분석</button>
@@ -350,6 +352,14 @@ table{min-width:660px}
     <div class="ctrl-group">
       <label>기준 기간</label>
       <div class="pills" id="pills"></div>
+    </div>
+    <div class="ctrl-group">
+      <label>시총 단위</label>
+      <div class="pills" id="ccyPills">
+        <button class="pill active" data-ccy="local">현지</button>
+        <button class="pill" data-ccy="krw">원 ₩</button>
+        <button class="pill" data-ccy="usd">달러 $</button>
+      </div>
     </div>
   </div>
   <!-- 지수 바 -->
@@ -433,9 +443,15 @@ const CONFIG = {
 };
 
 // ── 상태 ──────────────────────────────────────────────────────────────────────
-let krData = null, usData = null;
-let marketIndices = { kr: null, us: null }; // {kospi200, kosdaq150} / {sp500, ndx100, dji30}
+const dataByTab = { kr: null, us: null, jp: null, cn: null };
+let marketIndices = { kr: null, us: null, jp: null, cn: null };
 let currentTab = 'kr', isUS = false;
+const MARKETS = {
+  kr: { idx: ['kospi', 'kospi200', 'kosdaq'] },
+  us: { idx: ['sp500', 'ndx100', 'dji30'] },
+  jp: { idx: ['n225', 'topix'] },
+  cn: { idx: ['shcomp', 'csi300', 'hsi'] },
+};
 let STOCKS, DATES, PRICES;
 let tradingSet, dateToIdx, minY, minM, maxY, maxM;
 
@@ -444,6 +460,8 @@ const OFFSETS     = {"1D":1,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252};
 const US_EXCLUDE  = new Set(['GOOGL', 'GOOGM', 'GOOGN']);  // 미국: 중복 클래스주·우선주 제외 (GOOG만 유지)
 let selDateIdx = 0, selPeriod = "1D";
 let capSort = { key: 'mktcap', dir: 'desc' };   // 시가총액 표 정렬 상태
+let capCcy = 'local';                            // 시총 표시 통화: local | krw | usd
+let fxRates = null;                              // { KRW:1, USD:.., JPY:.., CNY:.., HKD:.. } (1단위의 원화값)
 let calYear, calMonth, calOpen = false;
 let uiInitialized = false;
 
@@ -482,17 +500,36 @@ function heatCls(v) {
   if (v < 0) return a >= 50  ? 'h4d' : a >= 20 ? 'h3d' : a >= 10 ? 'h2d' : 'h1d';
   return '';
 }
-function fmtCap(m) {
+function fmtEokJo(eok) {          // 억 단위 금액 → "N조 M억"
+  const jo = Math.floor(eok / 10000), ok = Math.round(eok % 10000);
+  if (jo >= 1) return ok > 0 ? `${jo.toLocaleString()}조 ${ok.toLocaleString()}억` : `${jo.toLocaleString()}조`;
+  return `${Math.round(eok).toLocaleString()}억`;
+}
+function fmtUSD(usd) {
+  if (usd >= 1e12) return `$${(usd/1e12).toFixed(1)}T`;
+  if (usd >= 1e9)  return `$${Math.round(usd/1e9)}B`;
+  return `$${Math.round(usd/1e6)}M`;
+}
+function capRaw(m, cur) {         // → [원시 시총 금액(현지통화 단위), 통화코드]
+  if (currentTab === 'kr') return [m * 1e8, 'KRW'];  // m: 억원
+  if (currentTab === 'us') return [m, 'USD'];
+  if (currentTab === 'jp') return [m, 'JPY'];
+  return [m, cur || 'CNY'];                          // cn (CNY/HKD 혼재)
+}
+function fmtCap(m, cur) {
   if (!m) return '<span class="na">-</span>';
-  if (isUS) {
-    if (m >= 1e12) return `$${(m/1e12).toFixed(1)}T`;
-    if (m >= 1e9)  return `$${Math.round(m/1e9)}B`;
-    return `$${Math.round(m/1e6)}M`;
-  } else {
-    const jo = Math.floor(m / 10000), ok = m % 10000;
-    if (jo >= 1) return ok > 0 ? `${jo.toLocaleString()}조 ${ok.toLocaleString()}억` : `${jo.toLocaleString()}조`;
-    return `${m.toLocaleString()}억`;
+  const [amt, ccy] = capRaw(m, cur);
+  // 환산 모드 (환율 있을 때만)
+  if (capCcy !== 'local' && fxRates && fxRates[ccy]) {
+    const krw = amt * fxRates[ccy];
+    if (capCcy === 'krw') return `₩${fmtEokJo(krw / 1e8)}`;
+    if (capCcy === 'usd') return fmtUSD(krw / (fxRates['USD'] || 1));
   }
+  // 현지통화
+  if (ccy === 'KRW') return fmtEokJo(amt / 1e8);
+  if (ccy === 'USD') return fmtUSD(amt);
+  const sym = ccy === 'HKD' ? 'HK$' : '¥';           // JPY / CNY / HKD
+  return `${sym}${fmtEokJo(amt / 1e8)}`;
 }
 function fmtRet(v) {
   if (v === null) return '<span class="na">N/A</span>';
@@ -524,7 +561,7 @@ function renderTbody(id, stocks, isUp) {
     tb.insertAdjacentHTML('beforeend',
       `<tr><td class="td-rank"><span class="rank ${rc}">${i+1}</span></td>` +
       `<td class="td-code" title="${s.code}">${s.code}</td><td class="td-name" title="${s.name}"><span class="cell-scroll">${s.name}</span></td>` +
-      `<td class="td-cap">${fmtCap(s.mktcap)}</td>${cols}</tr>`);
+      `<td class="td-cap">${fmtCap(s.mktcap, s.cur)}</td>${cols}</tr>`);
   });
 }
 function updateHeaders() {
@@ -540,9 +577,9 @@ function updateSubtitle() {
     `기준일 ${base}  ·  비교일 ${comp}  ·  정렬 기준: ${selPeriod}`;
 }
 function updateColumnHeaders() {
-  const codeLabel = isUS ? 'Ticker' : '종목코드';
-  const nameLabel = isUS ? 'Company' : '종목명';
-  const capLabel  = isUS ? 'Mkt Cap' : '시가총액';
+  const codeLabel = currentTab === 'kr' ? '종목코드' : 'Ticker';
+  const nameLabel = currentTab === 'kr' ? '종목명' : 'Company';
+  const capLabel  = currentTab === 'kr' ? '시가총액' : 'Mkt Cap';
   document.querySelectorAll('.th-code').forEach(th => th.textContent = codeLabel);
   document.querySelectorAll('.th-name').forEach(th => th.textContent = nameLabel);
   document.querySelectorAll('.th-cap-hd').forEach(th => th.textContent = capLabel);
@@ -582,7 +619,7 @@ function renderTop30() {
     tb.insertAdjacentHTML('beforeend',
       `<tr><td class="td-rank"><span class="rank rank-neutral">${i+1}</span></td>` +
       `<td class="td-code" title="${s.code}">${s.code}</td><td class="td-name" title="${s.name}"><span class="cell-scroll">${s.name}</span></td>` +
-      `<td class="td-cap">${fmtCap(s.mktcap)}</td>${cols}</tr>`);
+      `<td class="td-cap">${fmtCap(s.mktcap, s.cur)}</td>${cols}</tr>`);
   });
   updateCapHeader();
 }
@@ -595,7 +632,7 @@ function updateCapHeader() {
               : th.classList.contains('th-period') ? th.dataset.col : null;
     th.classList.remove('cap-sort-active');
     if (!key) return;
-    const base = key === 'mktcap' ? (isUS ? 'Mkt Cap' : '시가총액') : key;
+    const base = key === 'mktcap' ? (currentTab === 'kr' ? '시가총액' : 'Mkt Cap') : key;
     th.textContent = base + (capSort.key === key ? arrow : '');
     if (capSort.key === key) th.classList.add('cap-sort-active');
   });
@@ -709,11 +746,11 @@ function loadTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab));
   updateColumnHeaders();
 
-  const data = isUS ? usData : krData;
+  const data = dataByTab[currentTab];
   if (!data) {
     document.getElementById('tbody-up').innerHTML =
       `<tr><td colspan="11" style="text-align:center;padding:48px;color:#94a3b8;font-size:13px">
-        ${isUS ? '아직 해외 데이터가 없습니다.<br>먼저 GitHub Actions에서 fetch_us.py를 실행하세요.' : '국내 데이터를 불러올 수 없습니다.'}
+        ${currentTab === 'kr' ? '국내 데이터를 불러올 수 없습니다.' : '아직 데이터가 없습니다.<br>GitHub Actions에서 데이터 수집을 실행하세요.'}
       </td></tr>`;
     document.getElementById('tbody-dn').innerHTML = '';
     document.getElementById('subtitle').textContent = '';
@@ -728,20 +765,22 @@ function loadTab(tab) {
   // 지수 바 표시
   document.getElementById('index-bar').style.display = '';
   document.getElementById('index-cards').innerHTML = '<div class="idx-spin"></div>';
-  const alreadyHave = isUS ? marketIndices.us : marketIndices.kr;
+  const alreadyHave = marketIndices[currentTab];
   if (alreadyHave) {
     renderIndexBar();
   } else {
-    (isUS ? fetchUSIndices() : fetchKRIndices()).then(() => renderIndexBar());
+    fetchIndices(currentTab).then(() => renderIndexBar());
   }
 }
 
 function updateFooter() {
-  const data = isUS ? usData : krData;
-  const src  = isUS ? 'Yahoo Finance' : '네이버 금융';
+  const data = dataByTab[currentTab];
+  const src  = currentTab === 'kr' ? '네이버 금융' : 'Yahoo Finance';
   const collectedAt = data?.collected_at || null;
   const count = STOCKS.length.toLocaleString();
-  const threshold = isUS ? '시총 $20B 이상' : '시총 1조원 이상';
+  const threshold = currentTab === 'kr' ? '시총 1조원 이상'
+                  : currentTab === 'us' ? '시총 $20B 이상'
+                  : '시총 상위 종목';
 
   document.getElementById('footer').textContent =
     `총 ${count}종목 관찰 중 (${threshold})  ·  데이터 출처: ${src}  ·  최신 거래일: ${DATES[0]}`;
@@ -801,6 +840,16 @@ function setupUI() {
       render();
     });
     pd.appendChild(b);
+  });
+
+  // 시총 단위 토글
+  document.querySelectorAll('#ccyPills .pill').forEach(b => {
+    b.addEventListener('click', async () => {
+      capCcy = b.dataset.ccy;
+      document.querySelectorAll('#ccyPills .pill').forEach(x => x.classList.toggle('active', x === b));
+      if (capCcy !== 'local' && !fxRates) await fetchFx();
+      render();
+    });
   });
 
   // 탭 버튼
@@ -926,34 +975,29 @@ function setupUI() {
 
 // ── 시장 지수 Fetch & 렌더 ────────────────────────────────────────────────────
 
-async function fetchKRIndices() {
-  // ① 이미 로드된 krData에 indices가 있으면 바로 사용
-  if (krData?.indices && Object.keys(krData.indices).length) {
-    marketIndices.kr = krData.indices;
-    return;
-  }
-  // ② Firebase /v1/kr/indices 직접 조회 (Python 스크립트 실행 후)
+async function fetchFx() {
   try {
-    const r = await fetch(`${CONFIG.FIREBASE_BASE}/v1/kr/indices.json`);
+    const r = await fetch(`${CONFIG.FIREBASE_BASE}/v1/fx.json?t=` + Date.now());
     if (r.ok) {
       const d = await r.json();
-      if (d && Object.keys(d).length) { marketIndices.kr = d; return; }
+      if (d && d.toKRW) fxRates = d.toKRW;
     }
   } catch(e) {}
 }
 
-async function fetchUSIndices() {
-  // ① 이미 로드된 usData에 indices가 있으면 바로 사용
-  if (usData?.indices && Object.keys(usData.indices).length) {
-    marketIndices.us = usData.indices;
+async function fetchIndices(tab) {
+  // ① 이미 로드된 데이터에 indices가 있으면 바로 사용
+  const d0 = dataByTab[tab];
+  if (d0?.indices && Object.keys(d0.indices).length) {
+    marketIndices[tab] = d0.indices;
     return;
   }
-  // ② Firebase /v1/us/indices 직접 조회 (Python 스크립트 실행 후)
+  // ② Firebase /v1/{tab}/indices 직접 조회
   try {
-    const r = await fetch(`${CONFIG.FIREBASE_BASE}/v1/us/indices.json`);
+    const r = await fetch(`${CONFIG.FIREBASE_BASE}/v1/${tab}/indices.json`);
     if (r.ok) {
       const d = await r.json();
-      if (d && Object.keys(d).length) { marketIndices.us = d; return; }
+      if (d && Object.keys(d).length) { marketIndices[tab] = d; return; }
     }
   } catch(e) {}
 }
@@ -966,7 +1010,7 @@ function fmtIdxVal(v) {
 
 function getIdxForDate(dateStr) {
   // 날짜별 지수 히스토리에서 dateStr 이하 가장 가까운 날짜의 데이터 반환
-  const hist = isUS ? marketIndices.us : marketIndices.kr;
+  const hist = marketIndices[currentTab];
   if (!hist) return null;
   const dateRe = /^\d{4}-\d{2}-\d{2}$/;
   const avail = Object.keys(hist).filter(k => dateRe.test(k)).sort().reverse();
@@ -987,9 +1031,8 @@ function renderIndexBar() {
     return;
   }
 
-  const KR_ORDER = ['kospi', 'kospi200', 'kosdaq'];
-  const US_ORDER = ['sp500', 'ndx100', 'dji30'];
-  const keys = (isUS ? US_ORDER : KR_ORDER).filter(k => dayData[k]);
+  const order = (MARKETS[currentTab] && MARKETS[currentTab].idx) || [];
+  const keys = order.filter(k => dayData[k]);
   cards.innerHTML = keys.map(k => {
     const idx  = dayData[k];
     const cls  = idx.change > 0 ? 'idx-up' : idx.change < 0 ? 'idx-dn' : 'idx-flat';
@@ -1617,7 +1660,7 @@ async function triggerGithubAction() {
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
-  const prevCollectedAt = (isUS ? usData : krData)?.collected_at || '';
+  const prevCollectedAt = dataByTab[currentTab]?.collected_at || '';
   let count = 0;
   const MAX = 20; // 30초 × 20 = 10분
 
@@ -1629,7 +1672,7 @@ function startPolling() {
       const newTime = await res.json();
       if (newTime && newTime !== prevCollectedAt) {
         clearInterval(pollTimer); pollTimer = null;
-        if (currentTab === 'kr') krData = null; else usData = null;
+        dataByTab[currentTab] = null;
         await fetchTabData(currentTab);
         loadTab(currentTab);
         const btn = document.getElementById('btnCollect');
@@ -1652,15 +1695,14 @@ async function fetchTabData(tab) {
   // 새 경로(/v1/kr, /v1/us) 먼저 시도, 없으면 구 경로(/v1) 폴백
   const urls = tab === 'kr'
     ? [`${CONFIG.FIREBASE_BASE}/v1/kr.json`, `${CONFIG.FIREBASE_BASE}/v1.json`]
-    : [`${CONFIG.FIREBASE_BASE}/v1/us.json`];
+    : [`${CONFIG.FIREBASE_BASE}/v1/${tab}.json`];
   for (const url of urls) {
     try {
       const res = await fetch(url);
       if (!res.ok) continue;
       const data = await res.json();
       if (!data || !data.stocks) continue;
-      if (tab === 'kr') krData = data;
-      else              usData = data;
+      dataByTab[tab] = data;
       return data;
     } catch(e) { continue; }
   }
@@ -1669,19 +1711,18 @@ async function fetchTabData(tab) {
 
 async function init() {
   try {
-    document.getElementById('loading-msg').textContent = '국내 · 해외 데이터 불러오는 중...';
-    const [krResult, usResult] = await Promise.allSettled([
-      fetchTabData('kr'),
-      fetchTabData('us')
+    document.getElementById('loading-msg').textContent = '데이터 불러오는 중...';
+    await Promise.allSettled([
+      fetchTabData('kr'), fetchTabData('us'), fetchTabData('jp'), fetchTabData('cn')
     ]);
-    if (krResult.status === 'rejected' || !krData) {
+    if (!dataByTab.kr) {
       throw new Error('국내 데이터를 불러올 수 없습니다. Firebase를 확인하세요.');
     }
     document.getElementById('loading').style.display = 'none';
     setupUI();
-    // 지수 데이터 병렬 선행 Fetch (탭 전환 전 미리 가져오기)
-    fetchKRIndices().catch(() => {});
-    fetchUSIndices().catch(() => {});
+    // 지수·환율 병렬 선행 Fetch
+    ['kr', 'us', 'jp', 'cn'].forEach(t => fetchIndices(t).catch(() => {}));
+    fetchFx().catch(() => {});
     loadTab('kr');
   } catch(err) {
     document.getElementById('loading').innerHTML =
