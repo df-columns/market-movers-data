@@ -315,7 +315,7 @@ table{min-width:660px}
         <button class="tab-btn" data-tab="us">🇺🇸 해외</button>
       </div>
       <div class="action-btns">
-        <button class="btn-action btn-claude" id="btnClaude">🤖 Claude 분석</button>
+        <button class="btn-action btn-claude" id="btnClaude" style="display:none">🤖 Claude 분석</button>
         <button class="btn-action btn-review" id="btnReview">📰 시장 리뷰</button>
         <button class="btn-action btn-collect" id="btnCollect" style="display:none">⚡ 데이터 수집</button>
       </div>
@@ -827,7 +827,7 @@ function setupUI() {
   document.getElementById('btnClaude').addEventListener('click', () => runClaudeAnalysis());
 
   // 시장 리뷰 버튼
-  document.getElementById('btnReview').addEventListener('click', () => openReviewModal());
+  document.getElementById('btnReview').addEventListener('click', () => openReviewDirect());
   document.getElementById('review-close').addEventListener('click', () => closeReviewModal());
   document.getElementById('review-edit-toggle').addEventListener('click', () => toggleReviewEdit());
   document.getElementById('review-fullscreen').addEventListener('click', () => openReviewFullscreen());
@@ -1208,6 +1208,26 @@ function nowStr() {
   const d = new Date();
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 시장 리뷰를 새 탭에서 전체 페이지로 바로 열기 (모달 생략)
+async function openReviewDirect() {
+  const w = window.open('', '_blank');   // 팝업 차단 방지: 클릭 즉시 창을 먼저 연다
+  if (!w) { alert('팝업이 차단되었습니다. 이 사이트의 팝업을 허용해주세요.'); return; }
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>시장 리뷰</title></head><body style="margin:0;font-family:sans-serif;color:#64748b;padding:48px;text-align:center">시장 리뷰 불러오는 중...</body></html>');
+  try {
+    const r = await fetch(reviewPath(currentTab) + '?t=' + Date.now());
+    const d = r.ok ? await r.json() : null;
+    if (d && d.html) {
+      w.document.open();
+      w.document.write(d.html);
+      w.document.close();
+    } else {
+      w.document.body.innerHTML = '<div style="padding:48px;text-align:center;color:#64748b;font-family:sans-serif">아직 게시된 시장 리뷰가 없습니다.</div>';
+    }
+  } catch(e) {
+    w.document.body.innerHTML = '<div style="padding:48px;text-align:center;color:#dc2626;font-family:sans-serif">시장 리뷰를 불러오지 못했습니다.</div>';
+  }
 }
 
 async function openReviewModal() {
@@ -1660,23 +1680,3 @@ async function init() {
     document.getElementById('loading').style.display = 'none';
     setupUI();
     // 지수 데이터 병렬 선행 Fetch (탭 전환 전 미리 가져오기)
-    fetchKRIndices().catch(() => {});
-    fetchUSIndices().catch(() => {});
-    loadTab('kr');
-  } catch(err) {
-    document.getElementById('loading').innerHTML =
-      `<div style="text-align:center;padding:40px">
-        <div style="font-size:32px;margin-bottom:16px">⚠️</div>
-        <div style="font-size:16px;font-weight:700;color:#dc2626;margin-bottom:8px">데이터 로드 실패</div>
-        <div style="font-size:13px;color:#64748b">${err.message}</div>
-      </div>`;
-  }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  init();
-  if (CONFIG.GITHUB_PAT) setInterval(autoTrigger, 5 * 60 * 1000);
-});
-</script>
-</body>
-</html>
