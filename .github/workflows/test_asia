@@ -1,0 +1,20 @@
+name: Test Asia Universe
+
+on:
+  workflow_dispatch:      # 수동 실행 전용 (테스트용)
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test packages
+        run: pip install requests pandas yfinance xlrd openpyxl lxml akshare
+
+      - name: Run Asia universe test
+        run: python test_asia.py
