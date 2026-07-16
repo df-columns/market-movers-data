@@ -1680,3 +1680,23 @@ async function init() {
     document.getElementById('loading').style.display = 'none';
     setupUI();
     // 지수 데이터 병렬 선행 Fetch (탭 전환 전 미리 가져오기)
+    fetchKRIndices().catch(() => {});
+    fetchUSIndices().catch(() => {});
+    loadTab('kr');
+  } catch(err) {
+    document.getElementById('loading').innerHTML =
+      `<div style="text-align:center;padding:40px">
+        <div style="font-size:32px;margin-bottom:16px">⚠️</div>
+        <div style="font-size:16px;font-weight:700;color:#dc2626;margin-bottom:8px">데이터 로드 실패</div>
+        <div style="font-size:13px;color:#64748b">${err.message}</div>
+      </div>`;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  init();
+  if (CONFIG.GITHUB_PAT) setInterval(autoTrigger, 5 * 60 * 1000);
+});
+</script>
+</body>
+</html>
