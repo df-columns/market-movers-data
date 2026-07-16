@@ -3,7 +3,6 @@ beautifulsoup4
 firebase-admin
 urllib3
 pandas
-yfinance>=0.2.36,<0.3.0
+yfinance>=0.2.54,<0.3.0
 lxml
-pykrx
 anthropic
