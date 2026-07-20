@@ -1734,8 +1734,54 @@ async function init() {
   }
 }
 
+// ── 방문자 추적 (Firebase /analytics) ─────────────────────────────────────────
+//    브라우저별 고유 ID(localStorage)로 순 방문자/총 방문/일별 방문자 기록.
+//    콘솔에서 /analytics/summary 를 보면 숫자가 바로 보입니다.
+async function trackVisit() {
+  try {
+    const base = CONFIG.FIREBASE_BASE;
+    let vid = localStorage.getItem('visitorId');
+    const isNew = !vid;
+    if (!vid) {
+      vid = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem('visitorId', vid);
+    }
+    const nowIso = new Date().toISOString();
+    const today  = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); // KST 날짜
+
+    // 방문자별 정보 (방문 횟수 누적)
+    let count = 1, first = nowIso;
+    try {
+      const r = await fetch(`${base}/analytics/visitors/${vid}.json`);
+      if (r.ok) { const p = await r.json(); if (p && p.count) { count = p.count + 1; first = p.first || nowIso; } }
+    } catch (e) {}
+    fetch(`${base}/analytics/visitors/${vid}.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ first, last: nowIso, count })
+    }).catch(() => {});
+
+    // 일별 순 방문자 (daily/날짜 아래 자식 수 = 그날 순 방문자)
+    fetch(`${base}/analytics/daily/${today}/${vid}.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nowIso)
+    }).catch(() => {});
+
+    // 요약 (콘솔에서 숫자 바로 확인용)
+    let s = {};
+    try { const r = await fetch(`${base}/analytics/summary.json`); if (r.ok) { const p = await r.json(); if (p) s = p; } } catch (e) {}
+    s.totalVisits    = (s.totalVisits || 0) + 1;
+    if (isNew) s.uniqueVisitors = (s.uniqueVisitors || 0) + 1;
+    s.lastVisit      = nowIso;
+    fetch(`${base}/analytics/summary.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(s)
+    }).catch(() => {});
+  } catch (e) {}
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   init();
+  trackVisit();
   if (CONFIG.GITHUB_PAT) setInterval(autoTrigger, 5 * 60 * 1000);
 });
 </script>
