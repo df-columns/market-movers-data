@@ -1,10 +1,6 @@
 name: Auto Claude Market Review
 
 on:
-  schedule:
-    - cron: '40 6 * * 1-5'    # 국내+일본: 월~금 15:40 KST (= 06:40 UTC)
-    - cron: '30 21 * * 1-5'   # 미국: 화~토 06:30 KST (= 전날 21:30 UTC)
-    - cron: '10 8 * * 1-5'    # 중국(홍콩 마감 기준): 월~금 17:10 KST (= 08:10 UTC)
   workflow_dispatch:           # 수동 실행 버튼
     inputs:
       market:
