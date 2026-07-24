@@ -36,28 +36,30 @@ header h1{font-size:20px;font-weight:800;letter-spacing:-.4px;color:#0f172a}
 .date-field svg{flex-shrink:0;color:#94a3b8;pointer-events:none}
 #dateInput{width:90px;border:none;background:transparent;font-size:13px;font-weight:600;color:#1e293b;outline:none;font-family:inherit;letter-spacing:.3px;cursor:text}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
-.cal-popup{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:200;background:#fff;border:1px solid #e2e8f0;border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.13);padding:14px;width:264px}
+.cal-popup{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:200;background:#fff;border:1px solid #e2e8f0;border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.13);padding:14px;width:300px}
 .cal-popup.show{display:block}
 .cal-quick{display:flex;gap:6px;margin-bottom:12px}
 .quick-btn{flex:1;padding:6px 0;border:1.5px solid #e2e8f0;border-radius:8px;background:#f8fafc;font-size:12px;font-weight:700;color:#475569;cursor:pointer;transition:all .12s}
 .quick-btn:hover{background:#eff6ff;border-color:#3b82f6;color:#3b82f6}
-.cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-.cal-nav{width:28px;height:28px;border:1px solid #e2e8f0;border-radius:7px;background:#f8fafc;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;color:#475569;transition:all .12s}
+.cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.cal-nav{width:30px;height:30px;border:1.5px solid #e2e8f0;border-radius:8px;background:#fff;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;color:#334155;transition:all .12s}
 .cal-nav:hover{background:#eff6ff;border-color:#3b82f6;color:#3b82f6}
 .cal-nav:disabled{opacity:.3;cursor:default;pointer-events:none}
-.cal-month-label{font-size:14px;font-weight:700;color:#1e293b}
-.cal-dow{display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:4px}
-.cal-dow span{text-align:center;font-size:10px;font-weight:700;color:#94a3b8;padding:4px 0}
-.cal-dow span.sat{color:#93c5fd}
-.cal-dow span.sun{color:#fca5a5}
-.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-.cal-day{height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;color:#cbd5e1;cursor:default;transition:all .12s;user-select:none}
-.cal-day.trading{color:#1e293b;font-weight:600;cursor:pointer}
-.cal-day.trading:hover{background:#eff6ff;color:#3b82f6}
-.cal-day.sat{color:#93c5fd}.cal-day.sat:hover{background:#eff6ff}
-.cal-day.sun{color:#fca5a5}.cal-day.sun:hover{background:#fff1f2}
-.cal-day.selected{background:#3b82f6!important;color:#fff!important;font-weight:700}
-.cal-day.today-marker:not(.selected){outline:2px solid #fbbf24;outline-offset:-2px}
+.cal-month-label{font-size:15px;font-weight:800;color:#0f172a;letter-spacing:.3px}
+/* 책상달력 스타일(격자선) — 아카이브 달력과 통일 */
+.cal-box{border-top:1px solid #cbd5e1;border-left:1px solid #cbd5e1;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.cal-dow{display:grid;grid-template-columns:repeat(7,1fr)}
+.cal-dow span{text-align:center;font-size:12px;font-weight:800;color:#475569;padding:8px 0;background:#f1f5f9;border-right:1px solid #cbd5e1;border-bottom:1px solid #cbd5e1;letter-spacing:.3px}
+.cal-dow span.sat{color:#2563eb}
+.cal-dow span.sun{color:#dc2626}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr)}
+.cal-day{height:38px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500;color:#cbd5e1;cursor:default;transition:background .12s;user-select:none;background:#fff;border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0}
+.cal-day.trading{color:#334155;font-weight:600;cursor:pointer}
+.cal-day.trading:hover{background:#eff6ff;color:#2563eb}
+.cal-day.sat{color:#2563eb}.cal-day.sat:hover{background:#eff6ff}
+.cal-day.sun{color:#dc2626}.cal-day.sun:hover{background:#fff1f2}
+.cal-day.selected{background:#3b82f6!important;color:#fff!important;font-weight:800}
+.cal-day.today-marker:not(.selected){background:#fffbeb;color:#d97706;font-weight:800}
 .pills{display:flex;gap:6px}
 .pill{font-size:12px;font-weight:700;padding:5px 13px;border:1.5px solid #cbd5e1;border-radius:20px;background:#fff;color:#64748b;cursor:pointer;transition:all .15s}
 .pill:hover{border-color:#3b82f6;color:#3b82f6}
@@ -160,6 +162,8 @@ table{min-width:660px}
 .btn-claude:hover{background:#f5f3ff!important;border-color:#7c3aed!important;color:#7c3aed!important}
 .btn-review{color:#0369a1}
 .btn-review:hover{background:#f0f9ff!important;border-color:#0369a1!important;color:#0369a1!important}
+.btn-weekly{color:#059669}
+.btn-weekly:hover{background:#ecfdf5!important;border-color:#059669!important;color:#059669!important}
 /* ── 시장 리뷰 모달 ── */
 #review-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:9000;align-items:center;justify-content:center}
 #review-bg.show{display:flex}
@@ -167,6 +171,39 @@ table{min-width:660px}
 #review-modal h3{font-size:15px;font-weight:800;color:#0f172a}
 #review-modal .claude-desc{font-size:12px;color:#64748b}
 #review-updated{font-size:12px;color:#94a3b8}
+/* ── 시장 리뷰 아카이브(달력) 모달 ── */
+#arch-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:9100;align-items:center;justify-content:center}
+#arch-bg.show{display:flex}
+#arch-modal{background:#fff;border-radius:16px;padding:22px 26px;max-width:900px;width:95%;box-shadow:0 20px 60px rgba(0,0,0,.18);max-height:92vh;display:flex;flex-direction:column}
+#arch-modal h3{font-size:15px;font-weight:800;color:#0f172a}
+#arch-sub{font-size:12px;color:#94a3b8;margin:2px 0 12px}
+/* 달력 뷰 — 책상달력 스타일(격자선) */
+#arch-cal-view{display:flex;flex-direction:column;gap:14px}
+.arch-cal-nav{display:flex;align-items:center;justify-content:center;gap:16px}
+.arch-cal-nav button{width:36px;height:36px;border:1.5px solid #e2e8f0;background:#fff;border-radius:9px;font-size:18px;color:#334155;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center}
+.arch-cal-nav button:hover{background:#f0f9ff;border-color:#0369a1;color:#0369a1}
+.arch-cal-nav button:disabled{opacity:.3;cursor:default}
+#arch-cal-month{font-size:17px;font-weight:800;color:#0f172a;min-width:160px;text-align:center;letter-spacing:.3px}
+/* 격자 컨테이너: 위/왼쪽 테두리만 두고, 나머지는 셀 테두리로 완성 */
+.arch-cal-grid{border-top:1px solid #cbd5e1;border-left:1px solid #cbd5e1;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.arch-grid{display:grid;grid-template-columns:repeat(7,1fr)}
+.arch-dow{text-align:center;font-size:14px;font-weight:800;color:#475569;padding:11px 0;background:#f1f5f9;border-right:1px solid #cbd5e1;border-bottom:1px solid #cbd5e1;letter-spacing:.5px}
+.arch-dow.sun{color:#dc2626}.arch-dow.sat{color:#2563eb}
+.arch-day{min-height:60px;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:7px 9px;font-size:14px;color:#cbd5e1;position:relative;border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0}
+.arch-day.in-month{color:#334155;font-weight:600}
+.arch-day.sun.in-month{color:#dc2626}.arch-day.sat.in-month{color:#2563eb}
+.arch-day.has-review{cursor:pointer;background:#f0f9ff}
+.arch-day.has-review:hover{background:#e0f2fe}
+.arch-day.has-review .arch-day-num{color:#0369a1;font-weight:800}
+.arch-day-top{display:flex;align-items:center;gap:5px}
+.arch-day .arch-dot{width:6px;height:6px;border-radius:50%;background:#0ea5e9;flex-shrink:0}
+.arch-today-label{font-size:9px;font-weight:800;color:#f59e0b;letter-spacing:.6px}
+.arch-day.today{background:#fffbeb}
+.arch-empty{text-align:center;padding:34px 0;color:#94a3b8}
+/* 리뷰 뷰 */
+#arch-review-view{display:none;flex-direction:column;flex:1;min-height:0}
+#arch-review-iframe{width:100%;flex:1;min-height:520px;border:1.5px solid #e2e8f0;border-radius:9px;background:#fff;display:block}
+#arch-review-meta{font-size:12px;color:#64748b;margin-bottom:8px;font-weight:600}
 /* ── Claude 결과 영역 ── */
 .claude-result-area{overflow-y:auto;padding:14px 16px;background:#f8fafc;border-radius:9px;border:1.5px solid #e2e8f0;font-size:13px;line-height:1.7;flex:1;min-height:0}
 .claude-result-area.html-mode{padding:0;background:#fff;overflow:hidden}
@@ -284,6 +321,58 @@ table{min-width:660px}
   </div>
 </div>
 
+<!-- 시장 리뷰 아카이브(달력) 모달 -->
+<div id="arch-bg">
+  <div id="arch-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0">
+      <h3 id="arch-title">📰 시장 리뷰 아카이브</h3>
+      <button class="modal-btn" id="arch-publish-toggle" style="border-color:#7c3aed;color:#7c3aed;padding:5px 12px;font-size:12px">✏️ 게시/수정</button>
+    </div>
+    <div id="arch-sub">날짜를 누르면 그 날 저장된 시장 리뷰를 볼 수 있습니다.</div>
+
+    <!-- 달력 뷰 -->
+    <div id="arch-cal-view">
+      <div class="arch-cal-nav">
+        <button id="arch-prev" title="이전 달">‹</button>
+        <div id="arch-cal-month">—</div>
+        <button id="arch-next" title="다음 달">›</button>
+      </div>
+      <div class="arch-cal-grid">
+        <div class="arch-grid" id="arch-dow-row">
+          <div class="arch-dow sun">일</div><div class="arch-dow">월</div><div class="arch-dow">화</div>
+          <div class="arch-dow">수</div><div class="arch-dow">목</div><div class="arch-dow">금</div><div class="arch-dow sat">토</div>
+        </div>
+        <div class="arch-grid" id="arch-days"></div>
+      </div>
+      <div class="arch-empty" id="arch-loading" style="display:none">불러오는 중...</div>
+    </div>
+
+    <!-- 리뷰 뷰 -->
+    <div id="arch-review-view">
+      <div id="arch-review-meta"></div>
+      <iframe id="arch-review-iframe" sandbox="allow-same-origin allow-scripts allow-modals allow-popups"></iframe>
+    </div>
+
+    <!-- 게시(편집) 뷰 -->
+    <div id="arch-edit-view" style="display:none;flex-direction:column;flex:1;min-height:0;gap:8px">
+      <p class="claude-desc" style="margin:0;font-size:12px;color:#64748b">Claude가 만든 HTML을 붙여넣고 <b>게시하기</b>를 누르면, <b id="arch-edit-date"></b> 날짜로 아카이브에 저장됩니다. (```html … ``` 코드블록째 붙여넣어도 됩니다)</p>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#64748b">
+        <label style="font-weight:700">저장 날짜</label>
+        <input type="date" id="arch-edit-input-date" style="border:1.5px solid #e2e8f0;border-radius:8px;padding:5px 8px;font-size:12px;color:#374151">
+      </div>
+      <textarea id="arch-edit-html" placeholder="여기에 HTML 붙여넣기" style="width:100%;flex:1;min-height:240px;border:1.5px solid #e2e8f0;border-radius:9px;padding:12px;font-size:12px;font-family:'Courier New',monospace;resize:vertical;color:#374151;line-height:1.6;background:#f8fafc"></textarea>
+    </div>
+
+    <div class="modal-btns" style="flex-shrink:0;margin-top:12px">
+      <button class="modal-btn modal-btn-close" id="arch-close">닫기</button>
+      <button class="modal-btn" id="arch-back" style="border-color:#0369a1;color:#0369a1;display:none">‹ 달력으로</button>
+      <button class="modal-btn" id="arch-fullscreen" style="border-color:#0369a1;color:#0369a1;display:none">⛶ 전체화면</button>
+      <button class="modal-btn" id="arch-delete" style="border-color:#dc2626;color:#dc2626;display:none">🗑 삭제</button>
+      <button class="modal-btn modal-btn-ok" id="arch-publish" style="display:none">📢 게시하기</button>
+    </div>
+  </div>
+</div>
+
 <!-- 데이터 수집 안내 모달 -->
 <div id="modal-bg">
   <div id="modal">
@@ -319,6 +408,7 @@ table{min-width:660px}
       <div class="action-btns">
         <button class="btn-action btn-claude" id="btnClaude" style="display:none">🤖 Claude 분석</button>
         <button class="btn-action btn-review" id="btnReview">📰 시장 리뷰</button>
+        <button class="btn-action btn-weekly" id="btnWeekly">📑 주간 프롬프트</button>
         <button class="btn-action btn-collect" id="btnCollect" style="display:none">⚡ 데이터 수집</button>
       </div>
     </div>
@@ -341,11 +431,12 @@ table{min-width:660px}
             <span class="cal-month-label" id="calMonthLabel"></span>
             <button class="cal-nav" id="calNext">&#8250;</button>
           </div>
-          <div class="cal-dow">
-            <span>월</span><span>화</span><span>수</span><span>목</span><span>금</span>
-            <span class="sat">토</span><span class="sun">일</span>
+          <div class="cal-box">
+            <div class="cal-dow">
+              <span class="sun">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span class="sat">토</span>
+            </div>
+            <div class="cal-grid" id="calGrid"></div>
           </div>
-          <div class="cal-grid" id="calGrid"></div>
         </div>
       </div>
     </div>
@@ -692,22 +783,25 @@ function renderCalendar() {
   const nextY = calMonth===12 ? calYear+1 : calYear, nextM = calMonth===12 ? 1 : calMonth+1;
   document.getElementById('calPrev').disabled = prevY < minY || (prevY===minY && prevM<minM);
   document.getElementById('calNext').disabled = nextY > maxY || (nextY===maxY && nextM>maxM);
-  const rawDow = new Date(calYear, calMonth-1, 1).getDay();
-  const startOff = (rawDow+6)%7, daysInMon = new Date(calYear, calMonth, 0).getDate();
+  const startOff = new Date(calYear, calMonth-1, 1).getDay();   // 일요일 시작 (Sun=0)
+  const daysInMon = new Date(calYear, calMonth, 0).getDate();
   const todayStr = new Date().toISOString().slice(0,10), selStr = DATES[selDateIdx];
   let html = '';
   for (let i = 0; i < startOff; i++) html += '<div class="cal-day"></div>';
   for (let d = 1; d <= daysInMon; d++) {
     const mm = String(calMonth).padStart(2,'0'), dd = String(d).padStart(2,'0');
     const ds = `${calYear}-${mm}-${dd}`;
-    const dow = (new Date(calYear, calMonth-1, d).getDay()+6)%7;
+    const dow = new Date(calYear, calMonth-1, d).getDay();   // Sun=0 … Sat=6
     const isTrade = tradingSet.has(ds), isSel = ds===selStr, isToday = ds===todayStr;
     let cls = 'cal-day';
     if (isSel) cls += ' selected';
-    else if (isTrade) { cls += ' trading'; if (dow===5) cls+=' sat'; if (dow===6) cls+=' sun'; }
+    else if (isTrade) { cls += ' trading'; if (dow===6) cls+=' sat'; if (dow===0) cls+=' sun'; }
     if (isToday) cls += ' today-marker';
     html += `<div class="${cls}"${isTrade ? ` data-date="${ds}"`:``}>${d}</div>`;
   }
+  // 마지막 주를 7칸으로 채워 격자선이 깔끔하게 닫히도록 (뒤쪽 빈 칸)
+  const trailing = (7 - ((startOff + daysInMon) % 7)) % 7;
+  for (let i = 0; i < trailing; i++) html += '<div class="cal-day"></div>';
   grid.innerHTML = html;
   grid.querySelectorAll('[data-date]').forEach(el =>
     el.addEventListener('click', () => { setDate(el.dataset.date); closeCalendar(); }));
@@ -875,8 +969,22 @@ function setupUI() {
   // Claude 분석 버튼
   document.getElementById('btnClaude').addEventListener('click', () => runClaudeAnalysis());
 
-  // 시장 리뷰 버튼
-  document.getElementById('btnReview').addEventListener('click', () => openReviewDirect());
+  // 주간 리포트 프롬프트 (복사 전용)
+  document.getElementById('btnWeekly').addEventListener('click', () => openWeeklyPrompt());
+
+  // 시장 리뷰 버튼 → 달력(아카이브) 모달
+  document.getElementById('btnReview').addEventListener('click', () => openArchiveModal());
+  document.getElementById('arch-close').addEventListener('click', () => closeArchiveModal());
+  document.getElementById('arch-prev').addEventListener('click', () => archShiftMonth(-1));
+  document.getElementById('arch-next').addEventListener('click', () => archShiftMonth(1));
+  document.getElementById('arch-back').addEventListener('click', () => archShowCalendar());
+  document.getElementById('arch-fullscreen').addEventListener('click', () => archOpenFullscreen());
+  document.getElementById('arch-publish-toggle').addEventListener('click', () => archToggleEdit());
+  document.getElementById('arch-publish').addEventListener('click', () => archPublish());
+  document.getElementById('arch-delete').addEventListener('click', () => archDelete());
+  document.getElementById('arch-bg').addEventListener('click', e => {
+    if (e.target === document.getElementById('arch-bg')) closeArchiveModal();
+  });
   document.getElementById('review-close').addEventListener('click', () => closeReviewModal());
   document.getElementById('review-edit-toggle').addEventListener('click', () => toggleReviewEdit());
   document.getElementById('review-fullscreen').addEventListener('click', () => openReviewFullscreen());
@@ -890,11 +998,8 @@ function setupUI() {
   document.getElementById('claude-close').addEventListener('click', () =>
     document.getElementById('claude-bg').classList.remove('show'));
   document.getElementById('claude-copy').addEventListener('click', () => {
-    navigator.clipboard.writeText(document.getElementById('claude-prompt-text').value).then(() => {
-      const btn = document.getElementById('claude-copy');
-      btn.textContent = '✅ 복사됨';
-      setTimeout(() => { btn.textContent = '📋 복사'; }, 2000);
-    });
+    const src = document.getElementById('claude-prompt-text');
+    copyText(src.value, document.getElementById('claude-copy'), src);
   });
 
   // 로딩 취소
@@ -923,12 +1028,8 @@ function setupUI() {
     openPdfWindow(html);
   });
   document.getElementById('claude-result-copy').addEventListener('click', () => {
-    const raw = document.getElementById('claude-raw-text').value;
-    navigator.clipboard.writeText(raw).then(() => {
-      const btn = document.getElementById('claude-result-copy');
-      btn.textContent = '✅ 복사됨';
-      setTimeout(() => { btn.textContent = '📋 복사'; }, 2000);
-    });
+    const src = document.getElementById('claude-raw-text');
+    copyText(src.value, document.getElementById('claude-result-copy'), src);
   });
 
   document.getElementById('claude-bg').addEventListener('click', e => {
@@ -1188,6 +1289,181 @@ ${colHeader}`;
 }
 
 
+// ── 주간 리포트 프롬프트 (1W 랭킹 · 1W/1M/YTD 수익률 제공) ─────────────────────
+// YTD: 기준일이 속한 해의 시작(전년 마지막 거래일 종가) 대비 오프셋(거래일 수) 계산
+function ytdOffset(di) {
+  const jan1 = DATES[di].slice(0, 4) + '-01-01';
+  let firstInYear = di, prevYearLast = -1;
+  for (let k = di; k < DATES.length; k++) {
+    if (DATES[k] >= jan1) firstInYear = k;   // 올해 거래일 (가장 오래된 쪽으로 갱신)
+    else { prevYearLast = k; break; }        // 전년 마지막 거래일
+  }
+  return (prevYearLast >= 0 ? prevYearLast : firstInYear) - di;
+}
+
+function generateWeeklyPrompt() {
+  const di     = selDateIdx;
+  const date   = DATES[di];
+  const market = isUS ? '미국' : currentTab === 'jp' ? '일본' : currentTab === 'cn' ? '중국' : '한국';
+  const codeLabel = isUS ? 'Ticker' : '종목코드';
+
+  const { top10, bot10 } = getTopBottom(di, '1W');
+  const idxOf = {};
+  STOCKS.forEach((s, i) => { idxOf[s.c] = i; });
+  const ytdOff = ytdOffset(di);
+
+  const pct = v => (v === null || v === undefined) ? '?' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  const dOf = off => (di + off < DATES.length) ? DATES[di + off] : '데이터부족';
+
+  const line = (s, i) => {
+    const w = s.rets['1W'], m = s.rets['1M'];
+    const y = calcRet(di, ytdOff, idxOf[s.code]);
+    return `${String(i + 1).padStart(2, ' ')}. ${s.name} (${s.code})  |  1W ${pct(w)}  ·  1M ${pct(m)}  ·  YTD ${pct(y)}`;
+  };
+
+  const upSkill = `# 역할
+${market} 증시에서 특정 기간(여기서는 1주) 동안 크게 오른 종목의 "회사 정체성 + 상승 배경"을
+위클리 브리핑용 4문장 불릿으로 정리한다.
+
+# 사전 작업 (반드시 웹검색 먼저)
+1. 회사 개요: 핵심사업 + 주요고객/경쟁우위 확인
+2. 기간 내 상승 촉매 확인: 공시·실적·수주·임상·수급·정책/테마·목표가 변동 등
+3. 단일 촉매인지, 시장 전체 흐름(섹터·테마 강세)인지 구분. 특히 지수가 하락한 주면 "역행 강세" 성격인지 판단.
+4. 확인 안 된 내용은 단정하지 말 것 (사실 기반, 출처 attribution 우선)
+
+# 출력 형식
+- 종목당 대시(-) 4문장
+- 1문장 = 뭐하는 회사인지 (①핵심사업 ②주요고객/경쟁우위)
+- 2~4문장 = 이번 기간 상승 이유 (인과 구조로, 사실 기반)
+- 문장 끝에 마침표 없음, 명사/어간으로 종결 (경신·평가·부각·기대·상향·집중·이동 등)
+
+# 형식 기준 예시
+- 브이엠 — 플라즈마 소스 원천기술로 반도체 건식 식각장비를 국산화해 SK하이닉스에 다량 납품하는 전공정 장비사
+- AI·HBM 투자 확대로 SK하이닉스가 식각장비 발주를 늘리며 국산 장비 공급사로 매수세 집중
+- 2026년 초 누적 수주 1,431억원으로 작년 연간 수주를 이미 넘어섰고 1분기 영업이익도 폭증
+- M15X 신규 팹·미세공정 전환 수혜가 하반기까지 지속될 전망에 최선호주 등극하며 사상 최고가 경신`;
+
+  const downSkill = `# 역할
+${market} 증시에서 특정 기간(여기서는 1주) 동안 크게 내린 종목의 "회사 정체성 + 하락 배경"을
+위클리 브리핑용 4문장 불릿으로 정리한다. (위 상승 스킬을 하락용으로 그대로 미러링)
+
+# 사전 작업 (반드시 웹검색 먼저)
+1. 회사 개요: 핵심사업 + 주요고객/경쟁우위 확인
+2. 기간 내 하락 촉매 확인: 실적쇼크·악재 공시·수주취소·규제·소송·수급 이탈·목표가 하향·테마 약세 등
+3. 단일 악재인지, 시장 전체 약세인지 구분. 특히 지수가 상승한 주면 "역행 약세" 성격인지 판단.
+4. 확인 안 된 내용은 단정하지 말 것 (사실 기반, 출처 attribution 우선)
+
+# 출력 형식
+- 종목당 대시(-) 4문장
+- 1문장 = 뭐하는 회사인지 (①핵심사업 ②주요고객/경쟁우위)
+- 2~4문장 = 이번 기간 하락 이유 (인과 구조로, 사실 기반)
+- 문장 끝에 마침표 없음, 명사/어간으로 종결 (축소·둔화·이탈·하향·우려·경계·차익실현 등)
+
+# 형식 기준 예시
+- ○○○ — △△ 핵심사업을 하는 회사 (①핵심사업 ②주요고객/경쟁우위)
+- 실적 쇼크·악재로 이번 주 급락한 인과 3문장 (명사/어간 종결)`;
+
+  return `아래는 ${market} 증시에서 최근 1주일(1W) 동안 등락이 가장 컸던 종목 리스트야.
+내 프로젝트에 등록된 [급등 종목 상승배경 정리 스킬]과 동일한 기준으로, 아래 20개 종목에 대한 주간 분석 리포트를 만들어줘.
+(스킬 전문을 아래에 그대로 포함했고, 하락 종목용은 같은 형식으로 미러링해 뒀어.)
+
+━━━ 기준 정보 ━━━
+기준일: ${date}  |  랭킹 기준: 1주 등락률(1W)  |  시장: ${market}
+수익률 3종:  1W = 1주 전(${dOf(OFFSETS['1W'])}) 대비  ·  1M = 1개월 전(${dOf(OFFSETS['1M'])}) 대비  ·  YTD = 연초(${dOf(ytdOff)}) 대비
+
+━━━ ▲ 상승 TOP 10 (1주 기준) ━━━
+${top10.map(line).join('\n')}
+
+━━━ ▼ 하락 TOP 10 (1주 기준) ━━━
+${bot10.map(line).join('\n')}
+
+━━━ 분석 스킬 (이 형식·문체 그대로 적용) ━━━
+
+【상승 종목 — 급등 배경 정리 스킬】
+${upSkill}
+
+【하락 종목 — 급락 배경 정리 스킬 (미러링)】
+${downSkill}
+
+━━━ 출력 지시 (HTML 리포트) ━━━
+
+1. ★가장 중요★ 결과를 하나의 완성된 HTML 문서로 만들어줘.
+   • claude.ai면: "HTML" 유형 아티팩트(Artifact)로 생성 (우측 상단에서 .html 다운로드 가능).
+   • Claude Code 등 파일 생성 가능 환경이면: weekly-report.html 파일로 실제 생성.
+   • <!DOCTYPE html>부터 </html>까지 외부 CDN·폰트 링크 없이 인라인 스타일만 사용한 독립 실행 파일. 더블클릭하면 바로 열려야 해.
+2. 각 종목은 웹검색으로 사실 확인 후 위 스킬 형식(대시 4문장, 48~60자, 명사·어간 종결)을 정확히 지켜서 작성.
+   확인 안 된 내용은 단정하지 말고, 위에 제공한 1W/1M/YTD 수치는 그대로 사용(재조회 불필요).
+
+━━━ 섹션 순서 ━━━
+① 제목 + 메타(기준일·기간·시장)   ② 주간 총평(불릿 2~3개: 주도 테마·섹터 로테이션·시사점)
+③ 상승 TOP 10   ④ 하락 TOP 10
+
+━━━ 디자인 가이드 ━━━
+• 전체 톤: 금융 리포트 스타일, 단정하고 읽기 쉽게, 색 과하지 않게. 한국어 'Noto Sans KR', sans-serif.
+• 페이지: 가로 210mm(A4 폭) 흰 종이가 회색 배경 위에 놓인 느낌(margin:0 auto; padding:12mm; box-shadow). 길이는 내용만큼 여러 장 가능.
+• CSS에 포함: @page { size:A4 portrait; margin:12mm } / @media print { body{-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff} .page{box-shadow:none;margin:0} }
+• 섹션 헤더: 네이비(#1e3a5f) 배경 흰 글씨 + 좌측 굵은 accent bar. 섹션 카드: 흰 배경 + 연한 테두리(#e2e8f0).
+• 종목 블록(카드) 구조 — 각 종목마다:
+    · 헤더 한 줄: 왼쪽 "종목명 (${codeLabel})" 굵게, 오른쪽에 수익률 3개 뱃지 → 1W / 1M / YTD
+      (상승=초록 #16a34a·bg #f0fdf4, 하락=빨강 #dc2626·bg #fff1f2, 값 부호에 따라 색 지정)
+    · 그 아래 대시(-) 4문장 불릿 (8~9pt, 줄바꿈 허용, 검정 텍스트)
+• 상승 섹션 종목은 초록 계열 포인트, 하락 섹션은 빨강 계열 포인트로 좌측 바 색만 구분.
+• 폰트: 제목 15pt, 섹션헤더 11pt, 종목명 10pt, 수익률 뱃지 9pt, 본문 8~9pt.`;
+}
+
+
+// ── 클립보드 복사 (모바일/비보안 컨텍스트 폴백 포함) ──────────────────────────
+// navigator.clipboard 는 https/localhost 에서만 동작 → 모바일 http·file 에서는 execCommand 폴백 사용
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0';
+  document.body.appendChild(ta);
+  const isIOS = /ipad|iphone|ipod/i.test(navigator.userAgent);
+  if (isIOS) {
+    ta.contentEditable = 'true';
+    ta.readOnly = false;
+    const range = document.createRange();
+    range.selectNodeContents(ta);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    ta.setSelectionRange(0, text.length);
+  } else {
+    ta.focus();
+    ta.select();
+  }
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+// text 복사 시도 → btn 에 ✅ 표시. 실패 시 srcEl(원본 textarea)을 선택시켜 수동 복사 유도
+async function copyText(text, btn, srcEl) {
+  const flash = () => {
+    if (!btn) return;
+    if (!btn.dataset.orig) btn.dataset.orig = btn.textContent;
+    btn.textContent = '✅ 복사됨';
+    setTimeout(() => { btn.textContent = btn.dataset.orig; }, 2000);
+  };
+  // 1) 표준 API (보안 컨텍스트)
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); flash(); return true; }
+    catch (e) { /* 폴백으로 진행 */ }
+  }
+  // 2) execCommand 폴백 (모바일·http·file)
+  if (fallbackCopy(text)) { flash(); return true; }
+  // 3) 최후: 원본 텍스트를 선택시켜 사용자가 길게 눌러 복사하도록
+  if (srcEl) {
+    srcEl.focus();
+    try { srcEl.setSelectionRange(0, srcEl.value.length); } catch (e) { srcEl.select && srcEl.select(); }
+  }
+  alert('자동 복사가 지원되지 않는 환경이에요.\n선택된 텍스트를 길게 눌러 "복사"를 눌러주세요.');
+  return false;
+}
+
 // ── HTML 추출 (Claude가 마크다운 코드 블록으로 감싸는 경우 처리) ─────────────────
 function extractHtml(text) {
   const t = text.trim();
@@ -1439,6 +1715,265 @@ async function deleteReview() {
   }
 }
 
+// ── 시장 리뷰 아카이브 (달력 기반 과거 리뷰 조회/게시) ─────────────────────────
+// 저장 구조: /reviews_history/{tab}/{YYYY-MM-DD} = { html, updated_at, base_date }
+//   · 최신 1건은 기존과 동일하게 /reviews/{tab} 에도 유지 (index.html 호환)
+//   · generate_review.py 도 매 게시마다 위 경로에 함께 아카이브(자동 축적)
+const MARKET_LABEL = { kr: '한국', us: '미국', jp: '일본', cn: '중국' };
+const histBase   = tab => `${CONFIG.FIREBASE_BASE}/reviews_history/${tab}`;
+const histPath   = (tab, date) => `${histBase(tab)}/${date}.json`;
+
+let archTab = 'kr';
+let archDates = new Set();      // 아카이브에 존재하는 날짜 (YYYY-MM-DD)
+let archLatestDate = null;      // /reviews/{tab} 최신본의 기준일 (아카이브에 없을 수도 있음)
+let archYear, archMonth;        // 현재 보고 있는 달 (month: 0~11)
+let archViewedHtml = null;
+let archViewedDate = null;
+let archViewedSource = null;    // 'history' | 'latest'
+
+function fmtDate(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+async function openArchiveModal() {
+  archTab = currentTab;
+  document.getElementById('arch-title').textContent = `📰 시장 리뷰 아카이브 (${MARKET_LABEL[archTab] || archTab})`;
+  document.getElementById('arch-bg').classList.add('show');
+  // 먼저 '최근 리뷰' 화면을 로딩 상태로 띄운다 ('달력으로' 버튼으로 달력 이동 가능)
+  archViewedHtml = null; archViewedDate = null; archViewedSource = null;
+  archSetView('review');
+  document.getElementById('arch-review-iframe').srcdoc = '';
+  document.getElementById('arch-review-meta').textContent = '최근 리뷰 불러오는 중...';
+  await loadArchDates(archTab);
+  const latest = archLatestAvail();
+  if (latest) loadArchReview(latest);   // 가장 최근자 리뷰 표시
+  else archShowCalendar();              // 저장된 리뷰가 하나도 없으면 달력(빈 상태)로
+}
+
+function closeArchiveModal() {
+  document.getElementById('arch-bg').classList.remove('show');
+}
+
+// 뷰 전환: 'cal' | 'review' | 'edit'
+function archSetView(view) {
+  document.getElementById('arch-cal-view').style.display    = view === 'cal' ? 'flex' : 'none';
+  document.getElementById('arch-review-view').style.display = view === 'review' ? 'flex' : 'none';
+  document.getElementById('arch-edit-view').style.display   = view === 'edit' ? 'flex' : 'none';
+  document.getElementById('arch-back').style.display        = view === 'cal' ? 'none' : '';
+  document.getElementById('arch-fullscreen').style.display  = view === 'review' ? '' : 'none';
+  document.getElementById('arch-delete').style.display      = (view === 'review' && archViewedSource === 'history') ? '' : 'none';
+  document.getElementById('arch-publish').style.display     = view === 'edit' ? '' : 'none';
+  document.getElementById('arch-sub').style.display         = view === 'cal' ? '' : 'none';
+  const tgl = document.getElementById('arch-publish-toggle');
+  tgl.style.display   = view === 'review' ? 'none' : '';
+  tgl.textContent     = view === 'edit' ? '📅 달력으로' : '✏️ 게시/수정';
+}
+
+function archShowCalendar() {
+  archSetView('cal');
+  renderArchCalendar();
+}
+
+async function loadArchDates(tab) {
+  document.getElementById('arch-loading').style.display = '';
+  document.getElementById('arch-days').innerHTML = '';
+  archDates = new Set();
+  archLatestDate = null;
+  try {
+    const [rh, rl] = await Promise.all([
+      fetch(`${histBase(tab)}.json?shallow=true&t=${Date.now()}`),
+      fetch(`${CONFIG.FIREBASE_BASE}/reviews/${tab}/base_date.json?t=${Date.now()}`)
+    ]);
+    if (rh.ok) {
+      const keys = await rh.json();
+      if (keys && typeof keys === 'object') Object.keys(keys).forEach(d => archDates.add(d));
+    }
+    if (rl.ok) {
+      const bd = await rl.json();
+      if (bd && typeof bd === 'string') archLatestDate = bd;  // 아직 아카이브에 없어도 조회 가능하게
+    }
+  } catch (e) { /* 조용히 빈 달력 */ }
+  document.getElementById('arch-loading').style.display = 'none';
+
+  // 기본 표시 달 = 가장 최근 리뷰가 있는 달 (없으면 이번 달)
+  const all = [...archDates];
+  if (archLatestDate) all.push(archLatestDate);
+  let anchor = new Date();
+  if (all.length) {
+    all.sort();
+    const latest = all[all.length - 1];
+    const [y, m, d] = latest.split('-').map(Number);
+    anchor = new Date(y, m - 1, d);
+  }
+  archYear = anchor.getFullYear();
+  archMonth = anchor.getMonth();
+  renderArchCalendar();
+}
+
+// 조회 가능한 날짜들 중 가장 최근 날짜 (아카이브 + 최신본 기준일)
+function archLatestAvail() {
+  const all = [...archDates];
+  if (archLatestDate) all.push(archLatestDate);
+  if (!all.length) return null;
+  all.sort();
+  return all[all.length - 1];
+}
+
+// 조회 가능한 날짜(아카이브 + 최신본 기준일)
+function archAvail(date) {
+  return archDates.has(date) || date === archLatestDate;
+}
+
+function renderArchCalendar() {
+  const label = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'][archMonth];
+  document.getElementById('arch-cal-month').textContent = `${archYear}년 ${label}`;
+
+  const grid = document.getElementById('arch-days');
+  grid.innerHTML = '';
+  const firstDow = new Date(archYear, archMonth, 1).getDay();
+  const daysInMonth = new Date(archYear, archMonth + 1, 0).getDate();
+  const cellCount = Math.ceil((firstDow + daysInMonth) / 7) * 7;   // 딱 필요한 주 수만
+  const todayStr = fmtDate(new Date());
+
+  for (let i = 0; i < cellCount; i++) {
+    const cell = new Date(archYear, archMonth, 1 + (i - firstDow));
+    const inMonth = cell.getMonth() === archMonth;
+    const dow = cell.getDay();
+    const ds = fmtDate(cell);
+    const div = document.createElement('div');
+    div.className = 'arch-day' + (inMonth ? ' in-month' : '')
+      + (dow === 0 ? ' sun' : dow === 6 ? ' sat' : '');
+    if (ds === todayStr && inMonth) div.className += ' today';
+    const top = document.createElement('div');
+    top.className = 'arch-day-top';
+    const num = document.createElement('span');
+    num.className = 'arch-day-num';
+    num.textContent = cell.getDate();
+    top.appendChild(num);
+    if (inMonth && archAvail(ds)) {
+      div.className += ' has-review';
+      const dot = document.createElement('span');
+      dot.className = 'arch-dot';
+      top.appendChild(dot);          // 날짜 오른쪽에 파란 점
+      div.title = `${ds} 리뷰 보기`;
+      div.addEventListener('click', () => loadArchReview(ds));
+    }
+    if (ds === todayStr && inMonth) {
+      const tl = document.createElement('span');
+      tl.className = 'arch-today-label';
+      tl.textContent = 'TODAY';       // 날짜 오른쪽에 노란 TODAY
+      top.appendChild(tl);
+    }
+    div.appendChild(top);
+    grid.appendChild(div);
+  }
+}
+
+function archShiftMonth(delta) {
+  archMonth += delta;
+  if (archMonth < 0) { archMonth = 11; archYear--; }
+  else if (archMonth > 11) { archMonth = 0; archYear++; }
+  renderArchCalendar();
+}
+
+async function loadArchReview(date) {
+  const useLatest = !archDates.has(date) && date === archLatestDate;
+  const url = useLatest
+    ? `${CONFIG.FIREBASE_BASE}/reviews/${archTab}.json?t=${Date.now()}`
+    : `${histPath(archTab, date)}?t=${Date.now()}`;
+  document.getElementById('arch-review-meta').textContent = '불러오는 중...';
+  archSetView('review');
+  document.getElementById('arch-review-iframe').srcdoc = '';
+  try {
+    const r = await fetch(url);
+    const d = r.ok ? await r.json() : null;
+    if (d && d.html) {
+      archViewedHtml = d.html;
+      archViewedDate = date;
+      archViewedSource = useLatest ? 'latest' : 'history';
+      document.getElementById('arch-review-iframe').srcdoc = d.html;
+      const meta = `📅 ${d.base_date || date}` + (d.updated_at ? `  ·  게시 ${d.updated_at}` : '') + (useLatest ? '  ·  (최신본)' : '');
+      document.getElementById('arch-review-meta').textContent = meta;
+      document.getElementById('arch-delete').style.display = archViewedSource === 'history' ? '' : 'none';
+    } else {
+      document.getElementById('arch-review-meta').textContent = '이 날짜의 리뷰를 찾을 수 없습니다.';
+      archViewedHtml = null;
+    }
+  } catch (e) {
+    document.getElementById('arch-review-meta').textContent = '불러오기 실패';
+    archViewedHtml = null;
+  }
+}
+
+function archOpenFullscreen() {
+  if (!archViewedHtml) return;
+  const w = window.open('', '_blank');
+  if (!w) { alert('팝업이 차단되었습니다. 이 사이트의 팝업을 허용해주세요.'); return; }
+  w.document.open(); w.document.write(archViewedHtml); w.document.close();
+}
+
+function archToggleEdit() {
+  const editing = document.getElementById('arch-edit-view').style.display !== 'none';
+  if (editing) { archShowCalendar(); return; }
+  const def = (typeof DATES !== 'undefined' && DATES[selDateIdx]) ? DATES[selDateIdx] : fmtDate(new Date());
+  document.getElementById('arch-edit-input-date').value = def;
+  document.getElementById('arch-edit-date').textContent = def;
+  document.getElementById('arch-edit-html').value = '';
+  document.getElementById('arch-edit-input-date').oninput = e =>
+    document.getElementById('arch-edit-date').textContent = e.target.value;
+  archSetView('edit');
+}
+
+async function archPublish() {
+  const raw = document.getElementById('arch-edit-html').value;
+  let html = extractHtml(raw);
+  if (!html && raw.trim().includes('<')) html = raw.trim();
+  if (!html) { alert('HTML을 찾을 수 없습니다.\nClaude가 만든 HTML 또는 ```html … ``` 코드블록을 붙여넣어주세요.'); return; }
+  const date = document.getElementById('arch-edit-input-date').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { alert('저장 날짜를 YYYY-MM-DD 형식으로 골라주세요.'); return; }
+
+  const btn = document.getElementById('arch-publish');
+  btn.textContent = '게시 중...'; btn.disabled = true;
+  const payload = { html, updated_at: nowStr(), base_date: date };
+  try {
+    // 1) 날짜별 아카이브에 저장  2) 최신본(/reviews)도 갱신 (index.html 호환)
+    const rArch = await fetch(histPath(archTab, date), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    if (!rArch.ok) {
+      if (rArch.status === 401 || rArch.status === 403)
+        throw new Error(`Firebase 쓰기 권한이 없습니다.\n데이터베이스 규칙에서 "/reviews_history/${archTab}" 쓰기를 허용해야 합니다.`);
+      throw new Error(`HTTP ${rArch.status}`);
+    }
+    await fetch(`${CONFIG.FIREBASE_BASE}/reviews/${archTab}.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    btn.textContent = '✅ 게시됨';
+    archDates.add(date);
+    setTimeout(() => {
+      btn.textContent = '📢 게시하기'; btn.disabled = false;
+      loadArchReview(date);   // 방금 게시한 날짜 바로 보기
+    }, 900);
+  } catch (e) {
+    alert(`게시 실패: ${e.message}`);
+    btn.textContent = '📢 게시하기'; btn.disabled = false;
+  }
+}
+
+async function archDelete() {
+  if (!archViewedDate || archViewedSource !== 'history') return;
+  if (!confirm(`${archViewedDate} 아카이브 리뷰를 삭제할까요?`)) return;
+  try {
+    const r = await fetch(histPath(archTab, archViewedDate), { method: 'DELETE' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    archDates.delete(archViewedDate);
+    archShowCalendar();
+  } catch (e) {
+    alert(`삭제 실패: ${e.message}`);
+  }
+}
+
 // ── Claude 모달 상태 관리 ─────────────────────────────────────────────────────
 let claudeAbortController = null;
 
@@ -1550,6 +2085,20 @@ function renderMarkdown(text) {
 }
 
 // ── Claude 분석 실행 ──────────────────────────────────────────────────────────
+// 주간 리포트 프롬프트를 복사 모달에 표시 (API 호출 없음 — 붙여넣기 전용)
+function openWeeklyPrompt() {
+  if (!STOCKS || !STOCKS.length || !PRICES || PRICES.length < 2) {
+    alert('시장 데이터가 아직 로드되지 않았어요. 잠시 후 다시 시도해주세요.');
+    return;
+  }
+  const prompt = generateWeeklyPrompt();
+  const title = document.getElementById('claude-modal-title');
+  if (title) title.textContent = '📑 주간 리포트 프롬프트';
+  document.getElementById('claude-prompt-text').value = prompt;
+  showClaudeState('prompt');
+  document.getElementById('claude-bg').classList.add('show');
+}
+
 async function runClaudeAnalysis() {
   const prompt = generateClaudePrompt();
 

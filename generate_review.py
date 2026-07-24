@@ -366,8 +366,9 @@ def main():
     }
 
     print(f'[{market}] Firebase /reviews/{market} 에 게시 중...')
-    firebase_db.reference(f'/reviews/{market}').set(payload)
-    print(f'[{market}] 완료! (게시: {payload["updated_at"]}  ·  기준일 {date}  ·  {len(html):,} bytes)')
+    firebase_db.reference(f'/reviews/{market}').set(payload)                 # 최신본 (기존 index.html 호환)
+    firebase_db.reference(f'/reviews_history/{market}/{date}').set(payload)   # 날짜별 아카이브 (index2.html 달력)
+    print(f'[{market}] 완료! (게시: {payload["updated_at"]}  ·  기준일 {date}  ·  아카이브 저장  ·  {len(html):,} bytes)')
 
 
 if __name__ == '__main__':
