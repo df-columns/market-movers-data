@@ -49,11 +49,13 @@ IDX_ORDER = {
     'kr': ['kospi', 'kospi200', 'kosdaq'],
     'us': ['sp500', 'ndx100', 'dji30'],
     'jp': ['n225', 'topix'],
-    'cn': ['csi300', 'hsi'],
+    # cn: 2026-07-28부터 상하이종합(sse)으로 교체. csi300은 그 이전 기록을
+    #     계속 렌더링하기 위해 남겨둔다(없는 키는 필터링됨).
+    'cn': ['sse', 'csi300', 'hsi'],
 }
 MARKET_NAME = {'kr': '한국', 'us': '미국', 'jp': '일본', 'cn': '중국'}
-# 초과수익(alpha) 계산 기준 지수
-BENCH_IDX   = {'kr': 'kospi', 'us': 'sp500', 'jp': 'n225', 'cn': 'csi300'}
+# 초과수익(alpha) 계산 기준 지수 (없으면 index_context가 사용 가능한 첫 지수로 대체)
+BENCH_IDX   = {'kr': 'kospi', 'us': 'sp500', 'jp': 'n225', 'cn': 'sse'}
 # 검색에 사용할 언어 — 현지어로 검색해야 개별 종목 뉴스가 잡힌다
 SEARCH_LANG = {'kr': '한국어', 'us': '영어', 'jp': '일본어', 'cn': '중국어(간체)'}
 DEFAULT_CUR = {'kr': 'KRW', 'us': 'USD', 'jp': 'JPY', 'cn': 'CNY'}

@@ -541,7 +541,7 @@ const MARKETS = {
   kr: { idx: ['kospi', 'kospi200', 'kosdaq'] },
   us: { idx: ['sp500', 'ndx100', 'dji30'] },
   jp: { idx: ['n225', 'topix'] },
-  cn: { idx: ['csi300', 'hsi'] },
+  cn: { idx: ['sse', 'csi300', 'hsi'] },   // csi300은 2026-07-28 이전 기록용(없으면 자동 제외)
 };
 let STOCKS, DATES, PRICES;
 let tradingSet, dateToIdx, minY, minM, maxY, maxM;

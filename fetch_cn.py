@@ -2,7 +2,7 @@
 # Yahoo 스크리너(yfinance)로 시총 상위 유니버스 확보 → yfinance로 가격 수집
 # ⚠️ 본토(CNY)+홍콩(HKD) 통화가 섞임 — 시총 정렬은 근사(환율 유사)로 처리, 표시는 통화별 기호 사용
 
-import warnings, json, os, time
+import warnings, json, os, sys, time
 import pandas as pd
 import yfinance as yf
 from yfinance import EquityQuery
@@ -11,6 +11,14 @@ import firebase_admin
 from firebase_admin import credentials, db as firebase_db
 
 warnings.filterwarnings('ignore')
+
+# Windows 콘솔(cp949)에서 한글·기호 print가 UnicodeEncodeError를 내면
+# try/except 안의 수집 로직이 조용히 실패한다(실제로 지수 수집이 깨졌다).
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 # ── Firebase 초기화 ────────────────────────────────────────────────────────────
 cred = credentials.Certificate(json.loads(os.environ['FIREBASE_KEY']))
@@ -25,8 +33,21 @@ MARKET       = 'cn'
 REGIONS      = ['cn', 'hk']     # 상하이(.SS)+선전(.SZ)=cn, 홍콩(.HK)=hk
 TOP_N        = 200
 HISTORY_DAYS = 400
-INDEX_DEFS   = [('000300.SS', 'CSI 300', 'csi300'),
+# 지수 선정 근거 — Yahoo의 중국 지수 커버리지는 대부분 비어 있다(2026-07 확인).
+#   정상: 000001.SS(상하이종합) 22행/1개월, ^HSI(항셍) 21행/1개월
+#   불가: 000300.SS(CSI300)은 데이터 공백이 잦아 '전일 대비'가 며칠치가 되어 버림.
+#         000688.SS(과창판50), 000016.SS(SSE50), 000905/000852(CSI500/1000),
+#         399006/399673(창업판), 399330(선전100)은 1개월 조회 시 1행뿐이라 사용 불가.
+#   → 데이터가 안정적인 2개만 쓴다. 과창판 종목은 개별 종목(688xxx)으로 이미 커버됨.
+INDEX_DEFS   = [('000001.SS', '상하이종합', 'sse'),
                 ('^HSI', 'Hang Seng', 'hsi')]
+IDX_PERIOD        = '1mo'   # 5d는 데이터 공백에 취약해 지수가 조용히 누락됐다
+IDX_GAP_WARN_DAYS = 4       # 이 이상 벌어지면 로그로 알린다
+IDX_GAP_MAX_DAYS  = 5       # 이 이상이면 '전일 대비'가 아니므로 게시하지 않는다
+# 임계값을 5로 둔 이유: 연휴로 인한 정상 공백과 데이터 누락은 캘린더 일수로
+# 구분할 수 없다. 12일로 느슨하게 두면 CSI300처럼 11일 공백이 난 데이터의
+# 11일치 변동률이 '전일 대비'로 게시된다(실측 확인). 춘절·국경절 직후
+# 1거래일은 지수 카드가 비게 되지만(연 2회), 틀린 등락률을 싣는 것보다 낫다.
 
 # A+H 이중상장 주요 종목 (본토코드, 홍콩코드) — 둘 다 잡히면 홍콩(H주) 제거, 본토(A주) 유지
 DUAL_AH = [
@@ -138,19 +159,33 @@ print(f'\n[{MARKET.upper()}] 지수 수집 중...')
 indices = {}
 for sym, name, key in INDEX_DEFS:
     try:
-        hist = yf.Ticker(sym).history(period='5d')
+        # period='5d'는 Yahoo의 중국 지수 데이터 공백에 취약하다. 넉넉히 받아
+        # 유효한 종가 바 2개를 쓰고, 두 바의 간격이 비정상이면 게시하지 않는다.
+        hist = yf.Ticker(sym).history(period=IDX_PERIOD)
+        hist = hist[hist['Close'].notna() & (hist['Close'] > 0)]
         if len(hist) >= 2:
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
+            gap  = (hist.index[-1] - hist.index[-2]).days
             chg = curr - prev
             pct = chg / prev * 100
+            if gap > IDX_GAP_MAX_DAYS:
+                print(f'  [WARN] {name}({sym}): 최근 두 종가 간격 {gap}일 '
+                      f'({hist.index[-2].date()} → {hist.index[-1].date()}) — '
+                      f"'전일 대비'가 아니므로 제외")
+                continue
+            if gap > IDX_GAP_WARN_DAYS:
+                print(f'  [NOTE] {name}({sym}): 간격 {gap}일 (연휴로 보임)')
             indices[key] = {'name': name, 'value': round(curr, 2),
                             'change': round(chg, 2), 'changePct': round(pct, 4)}
             print(f'  {name}: {curr:,.2f} ({chg:+.2f}, {pct:+.2f}%)')
         else:
-            print(f'  [WARN] {sym}: 데이터 부족')
+            print(f'  [WARN] {name}({sym}): 유효 종가 {len(hist)}행 — 데이터 부족')
     except Exception as e:
         print(f'  [WARN] {sym}: {e}')
+
+if not indices:
+    print('  [WARN] 수집된 지수가 없습니다 — 지수 카드가 비게 됩니다.')
 
 print(f'\n[{MARKET.upper()}] Firebase 업로드 중...')
 stocks_data = [{'c': sym, 'n': name, 'm': int(mc), 'cur': cur} for sym, name, mc, cur in all_stocks_full]
