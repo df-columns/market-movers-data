@@ -58,18 +58,12 @@ BENCH_IDX   = {'kr': 'kospi', 'us': 'sp500', 'jp': 'n225', 'cn': 'csi300'}
 SEARCH_LANG = {'kr': '한국어', 'us': '영어', 'jp': '일본어', 'cn': '중국어(간체)'}
 DEFAULT_CUR = {'kr': 'KRW', 'us': 'USD', 'jp': 'JPY', 'cn': 'CNY'}
 
-# 등락 사유 분류 → (라벨색, 배경색)
-CATALYST_STYLE = {
-    '실적':             ('#1d4ed8', '#eff6ff'),
-    '공시':             ('#7c3aed', '#f5f3ff'),
-    '수주·계약':        ('#0369a1', '#f0f9ff'),
-    '정책·규제':        ('#b45309', '#fffbeb'),
-    '섹터·테마':        ('#0f766e', '#f0fdfa'),
-    '지수·매크로':      ('#475569', '#f8fafc'),
-    '수급':             ('#be185d', '#fdf2f8'),
-    '확인된_뉴스_없음': ('#64748b', '#f1f5f9'),
-}
-CATALYST_ENUM = list(CATALYST_STYLE.keys())
+# 등락 사유 분류 — 리포트에는 표기하지 않는다(딱지 제거).
+# 미확인 종목 집계와 총평 프롬프트 입력에만 쓰이는 내부 신호.
+CATALYST_ENUM = [
+    '실적', '공시', '수주·계약', '정책·규제',
+    '섹터·테마', '지수·매크로', '수급', '확인된_뉴스_없음',
+]
 
 # 등락 배경 구조화 출력 스키마
 #   sector / has_individual_issue / sector_issue 는 섹터 중복 축약에 쓰인다.
@@ -252,7 +246,9 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
     return f"""{date} {market_name} 증시에서 {stock['name']}({stock['code']}) 주가가 {fmt_ret(stock['ret'])} 움직였다.
 이 종목이 왜 그렇게 움직였는지 웹 검색으로 확인하라.
 
-━━━ 종목 정보 ━━━
+━━━ 종목 정보 (판단용 참고자료) ━━━
+※ 아래 수치는 네가 개별 재료인지 섹터/매크로 요인인지 판단하는 데만 쓴다.
+   리포트 표에 이미 등락률 컬럼이 있으므로, 코멘트에 이 수치들을 다시 쓰지 마라.
 종목명/코드 : {stock['name']} / {stock['code']}
 당일 등락률  : {fmt_ret(stock['ret'])}
 시장 지수    : {idx_ctx}
@@ -279,29 +275,35 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
 
 ━━━ 작성 규칙 (엄수) ━━━
 1. {date} 기준 ±3일 이내에 실제로 보도·공시된 내용만 근거로 삼아라.
-2. ★ 근거를 찾지 못했으면 절대 지어내지 마라.
+2. ★★ reason에 주가 등락 수치를 다시 쓰지 마라. 표에 이미 있어서 중복이다.
+   금지 표현 예: "최근 5거래일 8% 상승", "지수 대비 11%p 초과수익",
+   "당일 12% 급등하며", "코스피가 0.8% 오른 가운데 이 종목은 …%"
+   → 대신 원인만 서술하라. "왜 움직였는지"가 코멘트의 역할이다.
+   ※ 단, 뉴스에서 확인한 숫자(영업이익 4.2조원, 계약 규모 1,200억원,
+      목표주가 12% 상향 등)는 새 정보이므로 반드시 포함하라. 이건 금지 대상이 아니다.
+3. ★ 근거를 찾지 못했으면 절대 지어내지 마라.
    catalyst_type을 "확인된_뉴스_없음"으로 하고, reason에는 관찰된 사실만 적어라.
-   예: "개별 공시·뉴스 및 업종 이슈 모두 미확인. 지수가 {idx_ctx}인 가운데
-        {excess_line}로, 수급 요인에 따른 변동으로 추정된다."
+   예: "개별 공시·뉴스 및 업종 이슈 모두 미확인. 수급 요인에 따른 변동으로 추정된다."
    근거 없는 그럴듯한 서술보다 "확인 안 됨"이 훨씬 가치 있다.
-3. 지수가 이 종목과 같은 방향으로 크게 움직였고 초과수익이 작다면,
+4. 지수가 이 종목과 같은 방향으로 크게 움직였고 초과수익이 작다면,
    개별 재료로 포장하지 말고 "지수·매크로"로 분류하라.
-4. reason 분량 — 근거 수준에 맞춰라.
+   (분류값은 내부 집계용이며 리포트에 표기되지 않는다. reason에도 쓰지 마라.)
+5. reason 분량 — 근거 수준에 맞춰라.
    • 개별 재료가 뚜렷하면(has_individual_issue=true): {REASON_MIN_CHARS}~{REASON_MAX_CHARS}자.
      숫자(실적 수치, 계약 규모, 목표주가 등)를 확인했다면 반드시 포함하라.
    • 섹터 이슈로 설명되는 경우(has_individual_issue=false): 100~160자로 짧게.
      섹터 공통 원인만 쓰고 개별 종목 서술을 늘리지 마라.
    형용사보다 사실을 써라.
-5. sector — 이 종목의 업종을 짧은 명사로. 예: 반도체, 2차전지, 조선, 바이오, 방산, 증권, 자동차.
+6. sector — 이 종목의 업종을 짧은 명사로. 예: 반도체, 2차전지, 조선, 바이오, 방산, 증권, 자동차.
    다른 종목과 묶이도록 일반적으로 통용되는 업종명을 쓰고, 회사 고유 표현은 쓰지 마라.
-6. has_individual_issue — 이 종목만의 뚜렷한 개별 재료(실적·공시·수주 등)가 확인되면 true,
+7. has_individual_issue — 이 종목만의 뚜렷한 개별 재료(실적·공시·수주 등)가 확인되면 true,
    섹터/매크로/수급으로만 설명되면 false.
-7. sector_issue — 오늘 이 업종을 움직인 공통 원인을 한 문장(40~70자)으로.
+8. sector_issue — 오늘 이 업종을 움직인 공통 원인을 한 문장(40~70자)으로.
    업종 차원의 원인을 확인하지 못했으면 빈 문자열("").
    ※ 이 값은 같은 업종 종목이 여러 개일 때 코멘트를 한 줄로 묶는 데 쓰인다.
-8. source_url은 실제로 검색 결과에서 확인한 기사·공시 URL. 없으면 빈 문자열("").
+9. source_url은 실제로 검색 결과에서 확인한 기사·공시 URL. 없으면 빈 문자열("").
    source_date는 그 출처의 보도일(YYYY-MM-DD). 없으면 빈 문자열("").
-9. confidence — high: 공시·IR 등 1차 출처 확인 / medium: 언론 보도 확인 / low: 추정
+10. confidence — high: 공시·IR 등 1차 출처 확인 / medium: 언론 보도 확인 / low: 추정
 {profile_rule}
 
 한국어로 작성하라."""
@@ -416,7 +418,7 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
                 'profile_is_new': False}
 
     ctype = data.get('catalyst_type')
-    if ctype not in CATALYST_STYLE:
+    if ctype not in CATALYST_ENUM:
         ctype = '확인된_뉴스_없음'
     profile = (data.get('profile') or '').strip()
     conf = data.get('confidence')
@@ -603,21 +605,16 @@ def render_idx_cards(market, idx_data):
             + ''.join(cards) + '</div>')
 
 
-def render_badge(ctype, confidence, sector=''):
-    fg, bg = CATALYST_STYLE.get(ctype, CATALYST_STYLE['확인된_뉴스_없음'])
-    label = '미확인' if ctype == '확인된_뉴스_없음' else ctype
-    chip = (f'<span style="display:inline-block;padding:0 5px;border-radius:4px;'
-            f'background:{bg};color:{fg};font-size:6.5pt;font-weight:800;'
-            f'white-space:nowrap;vertical-align:1px">{E(label)}</span>')
-    if sector:
-        chip += (f'<span style="display:inline-block;margin-left:3px;padding:0 5px;'
-                 f'border-radius:4px;background:#f0fdfa;color:#0f766e;font-size:6.5pt;'
-                 f'font-weight:700;white-space:nowrap;vertical-align:1px">{E(sector)}</span>')
+def render_reason_prefix(confidence):
+    """사유 분류·업종 딱지는 표기하지 않는다.
+
+    남기는 것은 근거 신뢰도 표시 하나뿐이다. 이건 분류 라벨이 아니라
+    "이 서술은 확인된 사실이 아니라 추정"이라는 경고여서, 다른 칸의
+    데이터로 대체할 수 없다. 색 배경 없는 회색 소자로만 표시한다.
+    """
     if confidence == 'low':
-        chip += ('<span style="display:inline-block;margin-left:3px;padding:0 5px;'
-                 'border-radius:4px;background:#f1f5f9;color:#64748b;font-size:6.5pt;'
-                 'font-weight:700;vertical-align:1px">추정</span>')
-    return chip
+        return '<span style="color:#94a3b8;font-size:6.5pt;font-weight:700">추정 </span>'
+    return ''
 
 
 def render_table(rows, kind, footnotes, code_header, n_max=10):
@@ -667,7 +664,7 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
             f'{fmt_ret(r["ret"])}</td>'
             f'<td style="{td}color:#334155;line-height:1.45">{E(r.get("profile", ""))}</td>'
             f'<td style="{td}line-height:1.45;{dim}">'
-            f'{render_badge(r.get("catalyst_type", ""), r.get("confidence", ""), r.get("sector", ""))} '
+            f'{render_reason_prefix(r.get("confidence", ""))}'
             f'{E(r.get("reason", ""))}{note}</td>'
             '</tr>')
 
@@ -784,8 +781,7 @@ def self_test(out_path):
     long_reason = ('3분기 영업이익이 시장 컨센서스를 18% 상회한 4.2조원으로 발표되며 장중 급등했다. '
                    'HBM3E 12단 제품의 엔비디아 퀄 테스트 통과 소식이 함께 전해졌고, '
                    '증권사 4곳이 목표주가를 평균 12% 상향 조정했다.')
-    no_news = ('개별 공시·뉴스 미확인. 지수가 KOSPI +0.84%인 가운데 초과수익 +11.2%p로 '
-               '나타나, 업종 순환매 또는 수급 요인에 따른 변동으로 추정된다.')
+    no_news = ('개별 공시·뉴스 및 업종 이슈 모두 미확인. 수급 요인에 따른 변동으로 추정된다.')
     sector_issue = '미국 상무부 대중 반도체 장비 수출 규제 완화 발표로 업종 전반이 반등했다.'
     top = []
     for i in range(10):
@@ -835,7 +831,20 @@ def self_test(out_path):
     assert '테스트종목0' in doc and '하락종목9' in doc, '행 누락'
     assert doc.count('▲ 상승 TOP 10') == 1 and doc.count('▼ 하락 TOP 10') == 1, '표 제목 이상'
     assert doc.count('<sup') == 8, f'각주 개수 이상: {doc.count("<sup")}'
-    assert '반도체' in doc and '2차전지' in doc, '섹터 배지 누락'
+    # 사유 분류·업종 딱지가 렌더링되지 않아야 한다.
+    # (총평 산문에 '실적' 같은 단어가 정상적으로 등장하므로 단어가 아니라
+    #  딱지 마크업 자체를 검사한다)
+    assert 'display:inline-block;padding:0 5px;border-radius:4px' not in doc, '딱지 마크업이 남아 있음'
+    for css in ('#f0fdfa', '#eff6ff', '#f5f3ff', '#fdf2f8', '#fffbeb'):
+        assert css not in doc, f'딱지 배경색이 남아 있음: {css}'
+    # 업종명은 딱지로는 안 나오고, 축약 문구 안에서만 나온다
+    assert '2차전지' not in doc, '업종 딱지가 남아 있음'
+    # 축약 코멘트 본문의 업종명은 남아야 한다(딱지가 아니라 문장)
+    assert '반도체 섹터 동일 이슈 영향' in doc, '섹터 축약 문구 누락'
+    # 등락 수치를 코멘트에서 재인용하지 않는지 (샘플 기준)
+    assert '초과수익' not in doc and '5거래일' not in doc, '코멘트에 등락 수치 재인용'
+    # 근거 신뢰도 표시는 유지
+    assert '>추정 <' in doc, '추정 표시 누락'
     # 인쇄 시 표가 여러 장으로 넘어가도 깨지지 않아야 한다
     assert 'display:table-header-group' in doc, '표 헤더 반복 규칙 누락'
     assert 'page-break-inside:avoid' in doc, '행 미분할 규칙 누락'
