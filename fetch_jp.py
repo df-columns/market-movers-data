@@ -1,7 +1,7 @@
 # fetch_jp.py  ─  일본 주식 데이터 수집 → Firebase /v1/jp
 # Yahoo 스크리너(yfinance)로 시총 상위 유니버스 확보 → yfinance로 가격 수집
 
-import warnings, json, os, time
+import warnings, json, os, sys, time
 import pandas as pd
 import yfinance as yf
 from yfinance import EquityQuery
@@ -10,6 +10,21 @@ import firebase_admin
 from firebase_admin import credentials, db as firebase_db
 
 warnings.filterwarnings('ignore')
+
+# Windows 콘솔(cp949)에서 한글·기호 print가 UnicodeEncodeError를 내면
+# try/except 안의 수집 로직이 조용히 실패한다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+# 지수 조회 설정 — period='5d'는 데이터 공백에 취약해 지수가 조용히 누락된다.
+IDX_PERIOD        = '1mo'
+IDX_GAP_WARN_DAYS = 4
+IDX_GAP_MAX_DAYS  = 7   # 실측(1년): ^N225 최대 공백 6일(연말연시 2025-12-30 ->
+                        # 2026-01-05, 골든위크도 6일). 미국(5일)보다 길게 잡아야
+                        # 연휴 직후 지수가 사라지지 않는다.
 
 # ── Firebase 초기화 ────────────────────────────────────────────────────────────
 cred = credentials.Certificate(json.loads(os.environ['FIREBASE_KEY']))
@@ -125,12 +140,21 @@ for syms, name, key in INDEX_DEFS:
     got = False
     for sym in syms:
         try:
-            hist = yf.Ticker(sym).history(period='5d')
+            hist = yf.Ticker(sym).history(period=IDX_PERIOD)
+            hist = hist[hist['Close'].notna() & (hist['Close'] > 0)]
             if len(hist) >= 2:
                 curr = float(hist['Close'].iloc[-1])
                 prev = float(hist['Close'].iloc[-2])
+                gap  = (hist.index[-1] - hist.index[-2]).days
                 chg = curr - prev
                 pct = chg / prev * 100
+                if gap > IDX_GAP_MAX_DAYS:
+                    print(f'  [WARN] {name}({sym}): 최근 두 종가 간격 {gap}일 '
+                          f'({hist.index[-2].date()} -> {hist.index[-1].date()}) - '
+                          f'다음 후보로 넘어감')
+                    continue
+                if gap > IDX_GAP_WARN_DAYS:
+                    print(f'  [NOTE] {name}({sym}): 간격 {gap}일 (연휴로 보임)')
                 indices[key] = {'name': name, 'value': round(curr, 2),
                                 'change': round(chg, 2), 'changePct': round(pct, 4)}
                 print(f'  {name} ({sym}): {curr:,.2f} ({chg:+.2f}, {pct:+.2f}%)')
@@ -140,6 +164,9 @@ for syms, name, key in INDEX_DEFS:
             print(f'  [WARN] {sym}: {e}')
     if not got:
         print(f'  [WARN] {name}: 후보 심볼 모두 실패 {syms}')
+
+if not indices:
+    print('  [WARN] 수집된 지수가 없습니다 - 지수 카드가 비게 됩니다.')
 
 # ── 7. Firebase 업로드 ─────────────────────────────────────────────────────────
 print(f'\n[{MARKET.upper()}] Firebase 업로드 중...')
