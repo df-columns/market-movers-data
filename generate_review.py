@@ -72,17 +72,26 @@ CATALYST_STYLE = {
 CATALYST_ENUM = list(CATALYST_STYLE.keys())
 
 # 등락 배경 구조화 출력 스키마
+#   sector / has_individual_issue / sector_issue 는 섹터 중복 축약에 쓰인다.
+#   리서치 호출은 종목별로 독립·병렬이라 모델은 다른 종목이 뭘 찾았는지 모른다.
+#   따라서 "섹터 이슈가 겹치는지"는 모델이 판단할 수 없고,
+#   각 종목의 sector/sector_issue를 받아 collapse_sector_duplicates()에서
+#   결정론적으로 묶어 축약한다.
 RESEARCH_SCHEMA = {
     "type": "object",
     "properties": {
-        "reason":        {"type": "string"},
-        "catalyst_type": {"type": "string", "enum": CATALYST_ENUM},
-        "source_url":    {"type": "string"},
-        "source_date":   {"type": "string"},
-        "confidence":    {"type": "string", "enum": ["high", "medium", "low"]},
-        "profile":       {"type": "string"},
+        "reason":               {"type": "string"},
+        "catalyst_type":        {"type": "string", "enum": CATALYST_ENUM},
+        "sector":               {"type": "string"},
+        "has_individual_issue": {"type": "boolean"},
+        "sector_issue":         {"type": "string"},
+        "source_url":           {"type": "string"},
+        "source_date":          {"type": "string"},
+        "confidence":           {"type": "string", "enum": ["high", "medium", "low"]},
+        "profile":              {"type": "string"},
     },
-    "required": ["reason", "catalyst_type", "source_url", "source_date", "confidence", "profile"],
+    "required": ["reason", "catalyst_type", "sector", "has_individual_issue",
+                 "sector_issue", "source_url", "source_date", "confidence", "profile"],
     "additionalProperties": False,
 }
 
@@ -120,7 +129,13 @@ def calc_ret(prices, si, off):
     return p1 / p0 - 1
 
 
-def get_top_bottom(stocks, prices, market):
+def get_top_bottom(stocks, prices, market, n=10):
+    """상승/하락 상위 종목. 실제로 오른/내린 종목만 담는다.
+
+    상승 종목이 n개 미만이면 있는 만큼만, 하락도 마찬가지.
+    보합(0%)은 어느 쪽에도 넣지 않는다. 두 리스트는 부호로 갈리므로
+    유효 종목이 2n개 미만이어도 겹치지 않는다.
+    """
     default_cur = DEFAULT_CUR.get(market, '')
     lst = []
     for i, s in enumerate(stocks):
@@ -135,8 +150,9 @@ def get_top_bottom(stocks, prices, market):
             'mcap': s.get('m') or 0,
             'cur':  s.get('cur') or default_cur,
         })
-    lst.sort(key=lambda x: x['ret'], reverse=True)
-    return lst[:10], list(reversed(lst[-10:]))
+    gainers = sorted([s for s in lst if s['ret'] > 0], key=lambda x: x['ret'], reverse=True)
+    losers  = sorted([s for s in lst if s['ret'] < 0], key=lambda x: x['ret'])
+    return gainers[:n], losers[:n]
 
 
 def fmt_ret(ret):
@@ -244,24 +260,48 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
 {ret5_line}
 {stock['mcap_str']}
 
-━━━ 검색 방법 ━━━
+━━━ 검색 순서 (이 순서를 지켜라) ━━━
 반드시 {lang}로 검색하라. 영어로 검색하면 현지 종목 뉴스가 잡히지 않는다.
-검색어 예시: "{stock['name']} 주가", "{stock['name']} 공시", "{stock['name']} {date}", "{stock['code']} 뉴스"
+
+1단계 — 개별 종목 재료를 먼저 찾는다
+  "{stock['name']} 주가", "{stock['name']} 공시", "{stock['name']} {date}", "{stock['code']} 뉴스"
+  → 이 종목만의 실적·공시·수주·경영 이슈가 있는지 확인한다.
+
+2단계 — 1단계에서 뚜렷한 개별 재료가 안 나오면, 반드시 섹터/업종 이슈를 찾는다
+  이 종목이 속한 업종을 먼저 판단하고, 업종 단위로 검색한다.
+  "{{업종명}} 업종 주가 {date}", "{{업종명}} 관련주 급등락", "{{업종명}} 정책"
+  → 같은 업종 종목이 함께 움직였는지, 그 원인이 무엇인지 확인한다.
+  개별 재료가 없을 때 섹터 이슈를 건너뛰고 바로 "수급/미확인"으로 처리하지 마라.
+
+3단계 — 섹터 이슈도 없으면 지수·매크로 요인을 본다 (금리, 환율, 외국인 수급 등)
+
+4단계 — 위 어디에도 해당하지 않으면 "확인된_뉴스_없음"으로 분류한다
 
 ━━━ 작성 규칙 (엄수) ━━━
 1. {date} 기준 ±3일 이내에 실제로 보도·공시된 내용만 근거로 삼아라.
-2. ★ 개별 재료를 찾지 못했으면 절대 지어내지 마라.
+2. ★ 근거를 찾지 못했으면 절대 지어내지 마라.
    catalyst_type을 "확인된_뉴스_없음"으로 하고, reason에는 관찰된 사실만 적어라.
-   예: "개별 공시·뉴스 미확인. 지수가 {idx_ctx}인 가운데 {excess_line}로,
-        업종 순환매 또는 수급 요인에 따른 변동으로 추정된다."
+   예: "개별 공시·뉴스 및 업종 이슈 모두 미확인. 지수가 {idx_ctx}인 가운데
+        {excess_line}로, 수급 요인에 따른 변동으로 추정된다."
    근거 없는 그럴듯한 서술보다 "확인 안 됨"이 훨씬 가치 있다.
 3. 지수가 이 종목과 같은 방향으로 크게 움직였고 초과수익이 작다면,
    개별 재료로 포장하지 말고 "지수·매크로"로 분류하라.
-4. reason은 {REASON_MIN_CHARS}~{REASON_MAX_CHARS}자. 숫자(실적 수치, 계약 규모, 목표주가 등)를
-   확인했다면 반드시 포함하라. 형용사보다 사실을 써라.
-5. source_url은 실제로 검색 결과에서 확인한 기사·공시 URL. 없으면 빈 문자열("").
+4. reason 분량 — 근거 수준에 맞춰라.
+   • 개별 재료가 뚜렷하면(has_individual_issue=true): {REASON_MIN_CHARS}~{REASON_MAX_CHARS}자.
+     숫자(실적 수치, 계약 규모, 목표주가 등)를 확인했다면 반드시 포함하라.
+   • 섹터 이슈로 설명되는 경우(has_individual_issue=false): 100~160자로 짧게.
+     섹터 공통 원인만 쓰고 개별 종목 서술을 늘리지 마라.
+   형용사보다 사실을 써라.
+5. sector — 이 종목의 업종을 짧은 명사로. 예: 반도체, 2차전지, 조선, 바이오, 방산, 증권, 자동차.
+   다른 종목과 묶이도록 일반적으로 통용되는 업종명을 쓰고, 회사 고유 표현은 쓰지 마라.
+6. has_individual_issue — 이 종목만의 뚜렷한 개별 재료(실적·공시·수주 등)가 확인되면 true,
+   섹터/매크로/수급으로만 설명되면 false.
+7. sector_issue — 오늘 이 업종을 움직인 공통 원인을 한 문장(40~70자)으로.
+   업종 차원의 원인을 확인하지 못했으면 빈 문자열("").
+   ※ 이 값은 같은 업종 종목이 여러 개일 때 코멘트를 한 줄로 묶는 데 쓰인다.
+8. source_url은 실제로 검색 결과에서 확인한 기사·공시 URL. 없으면 빈 문자열("").
    source_date는 그 출처의 보도일(YYYY-MM-DD). 없으면 빈 문자열("").
-6. confidence — high: 공시·IR 등 1차 출처 확인 / medium: 언론 보도 확인 / low: 추정
+9. confidence — high: 공시·IR 등 1차 출처 확인 / medium: 언론 보도 확인 / low: 추정
 {profile_rule}
 
 한국어로 작성하라."""
@@ -273,7 +313,8 @@ def _json_fallback_instruction():
         "설명 없이 아래 키를 가진 JSON 객체 하나만 출력하라.\n"
         '{"reason": "...", "catalyst_type": "'
         + '|'.join(CATALYST_ENUM)
-        + '", "source_url": "...", "source_date": "YYYY-MM-DD", '
+        + '", "sector": "...", "has_individual_issue": true|false, '
+          '"sector_issue": "...", "source_url": "...", "source_date": "YYYY-MM-DD", '
           '"confidence": "high|medium|low", "profile": "..."}'
     )
 
@@ -368,6 +409,7 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
         return {**stock,
                 'reason': '리서치 실패 — 데이터를 가져오지 못했습니다.',
                 'catalyst_type': '확인된_뉴스_없음',
+                'sector': '', 'has_individual_issue': False, 'sector_issue': '',
                 'source_url': '', 'source_date': '',
                 'confidence': 'low',
                 'profile': cached_profile or '',
@@ -380,18 +422,61 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
     conf = data.get('confidence')
     out = {
         **stock,
-        'reason':         (data.get('reason') or '').strip() or '내용 없음',
-        'catalyst_type':  ctype,
-        'source_url':     (data.get('source_url') or '').strip(),
-        'source_date':    (data.get('source_date') or '').strip(),
-        'confidence':     conf if conf in ('high', 'medium', 'low') else 'low',
-        'profile':        cached_profile or profile or '회사 정보 미확보',
-        'profile_is_new': bool(need_profile and profile),
+        'reason':               (data.get('reason') or '').strip() or '내용 없음',
+        'catalyst_type':        ctype,
+        'sector':               (data.get('sector') or '').strip(),
+        'has_individual_issue': bool(data.get('has_individual_issue')),
+        'sector_issue':         (data.get('sector_issue') or '').strip(),
+        'source_url':           (data.get('source_url') or '').strip(),
+        'source_date':          (data.get('source_date') or '').strip(),
+        'confidence':           conf if conf in ('high', 'medium', 'low') else 'low',
+        'profile':              cached_profile or profile or '회사 정보 미확보',
+        'profile_is_new':       bool(need_profile and profile),
     }
     tag = '✓' if out['source_url'] else '·'
+    mark = '개별' if out['has_individual_issue'] else '섹터/매크로'
     print(f'  {tag} {stock["name"]}({stock["code"]}) {fmt_ret(stock["ret"])} '
-          f'[{ctype}/{out["confidence"]}] {len(out["reason"])}자')
+          f'[{ctype}/{out["confidence"]}/{mark}'
+          + (f'/{out["sector"]}' if out['sector'] else '')
+          + f'] {len(out["reason"])}자')
     return out
+
+
+def collapse_sector_duplicates(rows):
+    """개별 재료 없이 같은 섹터 이슈를 공유하는 종목들의 코멘트를 축약한다.
+
+    리서치는 종목별 독립 호출이라 각 호출은 다른 종목 결과를 모른다.
+    여기서 같은 방향(상승 표 / 하락 표) 안에서 sector가 겹치고
+    has_individual_issue=False 인 종목이 2개 이상이면,
+    첫 종목만 섹터 공통 이슈를 풀어 쓰고 나머지는 한 줄로 줄인다.
+    → 중복 서술 제거 + 분량 컨트롤.
+
+    반환: 축약된 종목 수
+    """
+    groups = {}
+    for r in rows:
+        if r.get('has_individual_issue'):
+            continue                        # 개별 재료가 뚜렷하면 축약 대상 아님
+        sector = (r.get('sector') or '').strip()
+        issue  = (r.get('sector_issue') or '').strip()
+        if not sector or not issue:
+            continue                        # 섹터 공통 원인을 확인하지 못한 경우 원문 유지
+        groups.setdefault(sector, []).append(r)
+
+    collapsed = 0
+    for sector, members in groups.items():
+        if len(members) < 2:
+            continue                        # 혼자면 축약할 이유가 없다
+        lead = members[0]
+        lead['reason'] = f"{sector} 섹터 공통 이슈 — {lead['sector_issue']}"
+        lead['sector_role'] = 'lead'
+        for m in members[1:]:
+            m['reason'] = f"{sector} 섹터 동일 이슈 영향 ({lead['name']}과 동일)"
+            m['sector_role'] = 'dup'
+            m['source_url'] = ''            # 같은 출처를 각주로 중복 표기하지 않는다
+            collapsed += 1
+        print(f'  [섹터축약] {sector} {len(members)}종목 → 대표 1건 + 축약 {len(members) - 1}건')
+    return collapsed
 
 
 def load_profiles(market, codes):
@@ -434,24 +519,33 @@ def save_profiles(market, results):
 # ── 2단계: 총평 ────────────────────────────────────────────────────────────────
 def build_overview(client, market, date, idx_ctx, top, bot):
     def brief(rows):
+        if not rows:
+            return '- (해당 종목 없음)'
         return '\n'.join(
-            f"- {r['name']} {fmt_ret(r['ret'])} [{r['catalyst_type']}] {r['reason'][:110]}"
+            f"- {r['name']} {fmt_ret(r['ret'])} [{r['catalyst_type']}"
+            + (f"/{r['sector']}" if r.get('sector') else '')
+            + ('/개별' if r.get('has_individual_issue') else '/섹터·매크로')
+            + f"] {r['reason'][:110]}"
             for r in rows)
 
     prompt = f"""{date} {MARKET_NAME.get(market, market)} 증시 데일리 브리핑의 '총평'을 작성하라.
 
 시장 지수: {idx_ctx}
 
-[상승 TOP 10]
+[상승 {len(top)}종목]
 {brief(top)}
 
-[하락 TOP 10]
+[하락 {len(bot)}종목]
 {brief(bot)}
+
+각 항목의 대괄호는 [사유분류/업종/개별재료 유무]다.
 
 위 자료만 근거로, 오늘 시장을 관통하는 흐름을 불릿 3개로 정리하라.
 - 각 불릿은 한 문장, 60~100자.
 - 반복되는 섹터·테마 / 상승과 하락을 가른 축 / 투자자 관점 시사점 순서로.
+- 같은 업종이 여러 종목에 걸쳐 나타나면 그 업종을 우선 언급하라.
 - 자료에 없는 사실을 추가하지 마라. 여러 종목이 "확인된_뉴스_없음"이면 그 사실 자체를 언급하라.
+- 상승 또는 하락 종목이 없으면 그 사실을 그대로 반영하라.
 - 불릿 기호 없이 각 줄에 문장만 출력하라(3줄)."""
 
     try:
@@ -509,12 +603,16 @@ def render_idx_cards(market, idx_data):
             + ''.join(cards) + '</div>')
 
 
-def render_badge(ctype, confidence):
+def render_badge(ctype, confidence, sector=''):
     fg, bg = CATALYST_STYLE.get(ctype, CATALYST_STYLE['확인된_뉴스_없음'])
     label = '미확인' if ctype == '확인된_뉴스_없음' else ctype
     chip = (f'<span style="display:inline-block;padding:0 5px;border-radius:4px;'
             f'background:{bg};color:{fg};font-size:6.5pt;font-weight:800;'
             f'white-space:nowrap;vertical-align:1px">{E(label)}</span>')
+    if sector:
+        chip += (f'<span style="display:inline-block;margin-left:3px;padding:0 5px;'
+                 f'border-radius:4px;background:#f0fdfa;color:#0f766e;font-size:6.5pt;'
+                 f'font-weight:700;white-space:nowrap;vertical-align:1px">{E(sector)}</span>')
     if confidence == 'low':
         chip += ('<span style="display:inline-block;margin-left:3px;padding:0 5px;'
                  'border-radius:4px;background:#f1f5f9;color:#64748b;font-size:6.5pt;'
@@ -522,10 +620,25 @@ def render_badge(ctype, confidence):
     return chip
 
 
-def render_table(rows, kind, footnotes, code_header):
-    """kind: 'up' | 'down'"""
+def render_table(rows, kind, footnotes, code_header, n_max=10):
+    """kind: 'up' | 'down'. rows 개수가 n_max보다 적으면 제목이 실제 개수를 반영한다."""
     up = kind == 'up'
     accent = '#16a34a' if up else '#dc2626'
+    arrow = '▲' if up else '▼'
+    word  = '상승' if up else '하락'
+
+    if not rows:
+        return (
+            '<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:12px">'
+            f'<div style="background:#1e3a5f;color:#ffffff;font-size:9pt;font-weight:700;'
+            f'padding:5px 10px;border-left:5px solid {accent}">{arrow} {word} 종목</div>'
+            '<div style="padding:10px;font-size:8pt;color:#64748b">'
+            f'해당 거래일에 {word}한 종목이 없습니다.</div></div>'
+        )
+
+    title = (f'{arrow} {word} TOP {n_max}' if len(rows) >= n_max
+             else f'{arrow} {word} 종목 {len(rows)}개 (전 종목)')
+
     head = ['종목코드' if code_header == 'code' else 'Ticker', '종목명', '등락률', '회사 소개', '등락 배경']
     widths = ['8%', '13%', '7%', '30%', '42%']
 
@@ -554,11 +667,10 @@ def render_table(rows, kind, footnotes, code_header):
             f'{fmt_ret(r["ret"])}</td>'
             f'<td style="{td}color:#334155;line-height:1.45">{E(r.get("profile", ""))}</td>'
             f'<td style="{td}line-height:1.45;{dim}">'
-            f'{render_badge(r.get("catalyst_type", ""), r.get("confidence", ""))} '
+            f'{render_badge(r.get("catalyst_type", ""), r.get("confidence", ""), r.get("sector", ""))} '
             f'{E(r.get("reason", ""))}{note}</td>'
             '</tr>')
 
-    title = '▲ 상승 TOP 10' if up else '▼ 하락 TOP 10'
     return (
         '<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:12px">'
         f'<div style="background:#1e3a5f;color:#ffffff;font-size:9pt;font-weight:700;'
@@ -591,10 +703,13 @@ def render_html(market, date, idx_data, overview, top, bot):
 
     ov = ''.join(f'<div style="margin-bottom:3px">• {E(line)}</div>' for line in overview)
 
-    total = len(top) + len(bot)
-    unknown = sum(1 for r in top + bot if r.get('catalyst_type') == '확인된_뉴스_없음')
+    rows_all = top + bot
+    total = len(rows_all)
+    unknown = sum(1 for r in rows_all if r.get('catalyst_type') == '확인된_뉴스_없음')
+    indiv   = sum(1 for r in rows_all if r.get('has_individual_issue'))
     quality = (f'<span style="color:#94a3b8;font-size:7pt">'
-               f'개별 재료 확인 {total - unknown}/{total}종목</span>')
+               f'대상 {total}종목 · 개별 재료 {indiv}건 · 섹터/매크로 {total - unknown - indiv}건 · '
+               f'미확인 {unknown}건</span>') if total else ''
 
     head_block = (
         f'<div style="font-size:11pt;font-weight:800;color:#1e293b;margin-bottom:3px">'
@@ -671,23 +786,43 @@ def self_test(out_path):
                    '증권사 4곳이 목표주가를 평균 12% 상향 조정했다.')
     no_news = ('개별 공시·뉴스 미확인. 지수가 KOSPI +0.84%인 가운데 초과수익 +11.2%p로 '
                '나타나, 업종 순환매 또는 수급 요인에 따른 변동으로 추정된다.')
+    sector_issue = '미국 상무부 대중 반도체 장비 수출 규제 완화 발표로 업종 전반이 반등했다.'
     top = []
     for i in range(10):
+        indiv = (i % 3 == 0)
         top.append({
             'code': f'00593{i}', 'name': f'테스트종목{i}', 'ret': 0.12 - i * 0.008,
             'ret5': 0.2, 'mcap': 5e12, 'cur': 'KRW',
             'profile': '메모리 반도체와 파운드리를 생산해 글로벌 IT 제조사에 공급하는 종합 반도체 기업이다.',
-            'reason': no_news if i % 3 == 1 else long_reason,
-            'catalyst_type': ['실적', '확인된_뉴스_없음', '수주·계약'][i % 3],
-            'source_url': '' if i % 3 == 1 else f'https://example.com/news/article-{i}-long-path',
+            'reason': long_reason if indiv else no_news,
+            'catalyst_type': ['실적', '섹터·테마', '확인된_뉴스_없음'][i % 3],
+            # i%3==1 → 반도체 섹터 공통(축약 대상 4종목), i%3==2 → 섹터 미확인(원문 유지)
+            'sector': '반도체' if i % 3 == 1 else ('2차전지' if indiv else ''),
+            'has_individual_issue': indiv,
+            'sector_issue': sector_issue if i % 3 == 1 else '',
+            'source_url': f'https://example.com/news/article-{i}-long-path' if indiv else '',
             'source_date': '2026-07-27',
-            'confidence': ['high', 'low', 'medium'][i % 3],
+            'confidence': ['high', 'medium', 'low'][i % 3],
         })
     bot = [dict(s, ret=-abs(s['ret']), code=f'01234{i}', name=f'하락종목{i}')
            for i, s in enumerate(top)]
 
+    # 섹터 축약은 상승/하락 표 안에서 각각 독립적으로 적용된다
+    # 반도체 그룹 = i%3==1 → i 1,4,7 의 3종목 → 대표 1 + 축약 2
+    c_up, c_down = collapse_sector_duplicates(top), collapse_sector_duplicates(bot)
+    assert (c_up, c_down) == (2, 2), f'섹터 축약 결과 이상: {c_up}, {c_down}'
+    leads = [r for r in top if r.get('sector_role') == 'lead']
+    dups  = [r for r in top if r.get('sector_role') == 'dup']
+    assert len(leads) == 1 and len(dups) == 2, '섹터 대표/축약 분류 이상'
+    assert leads[0]['reason'].startswith('반도체 섹터 공통 이슈 — '), '대표 코멘트 형식 이상'
+    assert dups[0]['reason'] == '반도체 섹터 동일 이슈 영향 (테스트종목1과 동일)', '축약 코멘트 형식 이상'
+    assert all(not d['source_url'] for d in dups), '축약 종목의 각주가 남아 있음'
+    # 개별 재료가 있는 종목은 축약되지 않아야 한다
+    assert all(r.get('sector_role') is None for r in top if r['has_individual_issue']), \
+        '개별 재료 종목이 축약됨'
+
     doc = render_html('kr', '2026-07-28', idx_data,
-                      ['반도체 업종이 실적 서프라이즈를 주도하며 지수 상승을 이끌었다.',
+                      ['반도체 업종이 규제 완화 소식에 동반 반등하며 지수 상승을 이끌었다.',
                        '중소형 개별주는 뚜렷한 재료 없이 수급으로 움직인 사례가 다수였다.',
                        '실적이 확인된 종목과 미확인 종목의 수익률 격차가 벌어지는 국면이다.'],
                       top, bot)
@@ -698,7 +833,9 @@ def self_test(out_path):
     assert '__GEN_TIME__' not in doc, '타임스탬프 미치환'
     assert doc.count('<div class="page">') == 2, '페이지 수 불일치'
     assert '테스트종목0' in doc and '하락종목9' in doc, '행 누락'
-    assert doc.count('<sup') == 14, f'각주 개수 이상: {doc.count("<sup")}'
+    assert doc.count('▲ 상승 TOP 10') == 1 and doc.count('▼ 하락 TOP 10') == 1, '표 제목 이상'
+    assert doc.count('<sup') == 8, f'각주 개수 이상: {doc.count("<sup")}'
+    assert '반도체' in doc and '2차전지' in doc, '섹터 배지 누락'
     # 인쇄 시 표가 여러 장으로 넘어가도 깨지지 않아야 한다
     assert 'display:table-header-group' in doc, '표 헤더 반복 규칙 누락'
     assert 'page-break-inside:avoid' in doc, '행 미분할 규칙 누락'
@@ -708,9 +845,32 @@ def self_test(out_path):
           'profile': '<b>x</b>', 'reason': '<img onerror=1>',
           'catalyst_type': '실적', 'confidence': 'high', 'source_url': ''}],
         'up', [], 'code'), 'HTML 이스케이프 실패'
+
+    # ── 가변 종목 수: 상승 3개 / 하락 0개 ──────────────────────────────────────
+    doc2 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 상승했다.'], top[:3], [])
+    assert '▲ 상승 종목 3개 (전 종목)' in doc2, '상승 개수 표기 이상'
+    assert '하락한 종목이 없습니다' in doc2, '빈 하락 표 처리 이상'
+    assert '<div class="page">' in doc2 and doc2.count('<div class="page">') == 2, '빈 표 페이지 이상'
+    # 반대 방향
+    doc3 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 하락했다.'], [], bot[:5])
+    assert '▼ 하락 종목 5개 (전 종목)' in doc3, '하락 개수 표기 이상'
+    assert '상승한 종목이 없습니다' in doc3, '빈 상승 표 처리 이상'
+    # 양쪽 모두 비어도 죽지 않아야 한다
+    render_html('kr', '2026-07-28', idx_data, ['해당 없음.'], [], [])
+
+    # ── get_top_bottom: 부호 기준 분리 + 가변 개수 ────────────────────────────
+    st = [{'c': 'A', 'n': 'a', 'm': 1}, {'c': 'B', 'n': 'b', 'm': 1},
+          {'c': 'C', 'n': 'c', 'm': 1}, {'c': 'D', 'n': 'd', 'm': 1}]
+    pr = [[110, 90, 100, 130], [100, 100, 100, 100]]   # +10%, -10%, 0%, +30%
+    g_, l_ = get_top_bottom(st, pr, 'kr')
+    assert [x['code'] for x in g_] == ['D', 'A'], f'상승 추출 이상: {g_}'
+    assert [x['code'] for x in l_] == ['B'], f'하락 추출 이상: {l_}'
+    assert not ({x['code'] for x in g_} & {x['code'] for x in l_}), '상승/하락 중복'
+
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(doc)
-    print(f'[self-test] OK — {len(doc):,} bytes, 페이지 2장, 각주 {doc.count("<sup")}건 → {out_path}')
+    print(f'[self-test] OK — {len(doc):,} bytes, 페이지 2장, 각주 {doc.count("<sup")}건, '
+          f'섹터축약 상승 {c_up}건/하락 {c_down}건 → {out_path}')
     return doc
 
 
@@ -758,7 +918,10 @@ def main():
     enrich(top10, bench)
     enrich(bot10, bench)
     targets = top10 + bot10
-    print(f'[{market}] 기준일 {date}  |  상승 {len(top10)} / 하락 {len(bot10)}  |  지수 {idx_ctx}')
+    # 상승/하락 종목이 10개 미만이면 있는 만큼만 다룬다
+    print(f'[{market}] 기준일 {date}  |  상승 {len(top10)}종목 / 하락 {len(bot10)}종목'
+          f'{"  (10개 미만 — 해당 종목만 처리)" if min(len(top10), len(bot10)) < 10 else ""}'
+          f'  |  지수 {idx_ctx}')
 
     profiles = load_profiles(market, [s['code'] for s in targets])
     print(f'[{market}] 회사 소개 캐시 적중 {len(profiles)}/{len(targets)}종목')
@@ -774,8 +937,15 @@ def main():
     top_r = results[:len(top10)]
     bot_r = results[len(top10):]
 
-    found = sum(1 for r in results if r['catalyst_type'] != '확인된_뉴스_없음')
-    print(f'[{market}] 리서치 완료 — 개별 재료 확인 {found}/{len(results)}종목')
+    indiv   = sum(1 for r in results if r['has_individual_issue'])
+    unknown = sum(1 for r in results if r['catalyst_type'] == '확인된_뉴스_없음')
+    print(f'[{market}] 리서치 완료 — 개별재료 {indiv} / 섹터·매크로 {len(results) - unknown - indiv} '
+          f'/ 미확인 {unknown} (총 {len(results)}종목)')
+
+    # 개별 재료 없이 같은 섹터 이슈를 공유하는 종목은 코멘트를 축약한다 (상승/하락 각각)
+    print(f'[{market}] 섹터 중복 코멘트 축약 중...')
+    collapsed = collapse_sector_duplicates(top_r) + collapse_sector_duplicates(bot_r)
+    print(f'[{market}] 섹터 축약 {collapsed}건')
 
     saved = save_profiles(market, results)
     if saved:
