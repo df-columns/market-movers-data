@@ -891,6 +891,8 @@ def main():
     ap.add_argument('--market', choices=['kr', 'us', 'jp', 'cn'])
     ap.add_argument('--self-test', action='store_true', help='API 없이 HTML 렌더링만 검증')
     ap.add_argument('--out', default='review_selftest.html')
+    ap.add_argument('--force', action='store_true',
+                    help='해당 기준일 리뷰가 이미 있어도 다시 생성한다')
     args = ap.parse_args()
 
     if args.self_test:
@@ -918,6 +920,23 @@ def main():
         sys.exit(1)
 
     date = dates[0]
+
+    # ── 멱등 가드: 이 기준일 리뷰가 이미 있으면 아무것도 하지 않는다 ───────────
+    # 리뷰 트리거가 두 경로(항상 켜둔 PC 루프 + GitHub cron 백업)에서 오므로
+    # 먼저 도착한 쪽만 실제로 생성하고 나머지는 몇 초 만에 no-op 으로 끝나게 한다.
+    # 덕분에 cron 을 백업으로 켜도 Claude API 를 두 번 쓰지 않는다.
+    #
+    # 키를 '기준일'(= /v1/{market}/updated, 마지막 거래일)로 잡는 게 핵심이다.
+    # 휴장일에는 기준일이 안 넘어가므로 이미 있는 리뷰를 다시 만들지 않고,
+    # 수집이 아직 새 거래일을 못 올렸으면 리뷰할 게 없으니 그것도 건너뛴다.
+    # 둘 다 올바른 동작이다.
+    if not args.force:
+        existing = fb_ref(f'/reviews_history/{market}/{date}/updated_at').get()
+        if existing:
+            print(f'[{market}] 기준일 {date} 리뷰가 이미 있습니다 (게시: {existing}).')
+            print(f'[{market}] 건너뜀 — 다시 만들려면 --force. (에러 아님)')
+            return
+
     top10, bot10 = get_top_bottom(stocks, prices, market)
     idx_data = get_idx_for_date(indices, date)
     idx_ctx, bench = index_context(market, idx_data)

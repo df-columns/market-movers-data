@@ -1,7 +1,18 @@
 name: Auto Claude Market Review
 
 on:
-  workflow_dispatch:           # 수동 실행 버튼
+  # 주 트리거는 항상 켜둔 PC 의 트리거 루프(workflow_dispatch)다.
+  # 아래 cron 은 '못 나온 리포트 줍기' 백업이다 — 루프 발사 시각 + 30분.
+  # PC 가 꺼져 있거나 절전으로 5분 창을 놓쳐도 그날 리뷰가 나오게 한다.
+  #
+  # 두 번 도는 걱정은 없다: generate_review.py 가 기준일 리뷰 존재 여부를 먼저
+  # 확인하고 이미 있으면 즉시 종료한다(멱등). 늦게 온 쪽은 Claude API 를
+  # 쓰지 않고 몇 초 만에 끝난다.
+  schedule:
+    - cron: '10 7 * * 1-5'    # 국내+일본 줍기: 월~금 16:10 KST (루프 15:40 + 30분)
+    - cron: '0 22 * * 1-5'    # 미국 줍기:     화~토 07:00 KST (루프 06:30 + 30분)
+    - cron: '40 8 * * 1-5'    # 중국 줍기:     월~금 17:40 KST (루프 17:10 + 30분)
+  workflow_dispatch:           # 수동 실행 버튼 / 트리거 루프가 쓰는 경로
     inputs:
       market:
         description: '분석할 시장 (kr 국내 / us 미국 / jp 일본 / cn 중국)'
@@ -9,6 +20,11 @@ on:
         default: 'kr'
         type: choice
         options: [kr, us, jp, cn]
+      force:
+        description: '이미 있는 리뷰도 다시 생성 (프롬프트 수정 후 재생성용)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   review:
@@ -28,9 +44,9 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "markets=${{ github.event.inputs.market }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "40 6 * * 1-5" ]; then
+          elif [ "${{ github.event.schedule }}" = "10 7 * * 1-5" ]; then
             echo "markets=kr jp" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "30 21 * * 1-5" ]; then
+          elif [ "${{ github.event.schedule }}" = "0 22 * * 1-5" ]; then
             echo "markets=us" >> "$GITHUB_OUTPUT"
           else
             echo "markets=cn" >> "$GITHUB_OUTPUT"
@@ -41,13 +57,17 @@ jobs:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          # schedule 실행에는 inputs 가 없으므로 FORCE 는 비어 있게 된다 (줍기는 항상 멱등).
+          FORCE=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then FORCE="--force"; fi
+
           # 한 시장이 실패해도 나머지는 계속 돌리되, 끝에서 job 을 실패로 만든다.
           # 예전 `|| echo "::warning::"` 는 실패를 삼켜서 런이 항상 success 로 보였다
           # (generate_review.py 의 NameError 가 그래서 오래 안 드러났다).
           failed=""
           for m in ${{ steps.mkt.outputs.markets }}; do
             echo "=================== $m ==================="
-            if ! python generate_review.py --market "$m"; then
+            if ! python generate_review.py --market "$m" $FORCE; then
               echo "::error::$m 리뷰 실패"
               failed="$failed $m"
             fi
