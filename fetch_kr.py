@@ -1,6 +1,6 @@
 # fetch_kr.py  ─  국내 주식 데이터 수집 → Firebase /v1/kr
 
-import requests, urllib3, warnings, json, re, os
+import requests, urllib3, warnings, json, re, os, sys
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
@@ -27,6 +27,19 @@ KOSDAQ_PAGES = 4
 MAX_WORKERS  = 20
 HISTORY_DAYS = 400
 
+# ── 네이버 접속 재시도·가드 설정 ───────────────────────────────────────────────
+# finance.naver.com 은 장시간 응답하지 않는 구간이 있다.
+#   실측: 2026-08-01(토) 00:00~10:30 KST, 10시간 30분 연속 connect timeout.
+#   그 사이 133회 실행이 전부 실패했고, 리스트가 0종목이 되어 valid_dates[0] 에서
+#   IndexError 로 죽었다. 죽으면 daily_update 의 뒤 스텝(us/jp/cn/fx)까지 skip 됐다.
+# connect 타임아웃을 짧게 잡는 이유: 호스트가 블랙홀이면 파이썬이 DNS A레코드를
+# 순서대로 다 시도하므로 (타임아웃 × IP수) 만큼 걸린다 — 실측 요청당 약 40초.
+NAVER_TRIES     = 3
+NAVER_BACKOFF   = 3          # 재시도 대기: 3초 → 6초
+NAVER_TIMEOUT   = (5, 15)    # (connect, read)
+MIN_STOCK_RATIO = 0.8        # 기존 종목 수의 이 비율 미만이면 업로드하지 않고 스킵
+MIN_STOCK_ABS   = 200        # 기존 종목 수를 모를 때 쓰는 하한 (정상 약 289종목)
+
 session = requests.Session()
 session.verify = False
 session.headers.update({
@@ -34,13 +47,43 @@ session.headers.update({
     'Referer': 'https://finance.naver.com/'
 })
 
+
+def naver_get(url, tries=NAVER_TRIES, **kw):
+    """네이버 GET — 지수 백오프 재시도. 전부 실패하면 마지막 예외를 올린다."""
+    kw.setdefault('timeout', NAVER_TIMEOUT)
+    last = None
+    for i in range(tries):
+        try:
+            return session.get(url, **kw)
+        except Exception as e:
+            last = e
+            if i < tries - 1:
+                wait = NAVER_BACKOFF * (i + 1)
+                print(f'  [RETRY {i + 1}/{tries - 1}] {url} — '
+                      f'{type(e).__name__}, {wait}초 후 재시도')
+                time.sleep(wait)
+    raise last
+
+
+def skip(reason):
+    """수집이 온전하지 않을 때 — 기존 Firebase 데이터를 건드리지 않고 정상 종료.
+
+    exit 0 인 이유: 5분마다 도는 워크플로에서 외부 사이트 장애를 실패로 처리하면
+    뒤 스텝(us/jp/cn/fx)까지 못 돌고 알림만 시끄러워진다. 반쪽 데이터로
+    덮어쓰지 않는 것이 목적이므로 '아무것도 하지 않고 끝내기'가 맞다.
+    """
+    print(f'[KR] 건너뜀 — {reason}')
+    print('[KR] 기존 Firebase 데이터를 유지합니다. (에러 아님)')
+    sys.exit(0)
+
+
 def fetch_stock_list(market_code, pages):
     results = []
     for page in range(1, pages + 1):
         try:
-            r = session.get(
+            r = naver_get(
                 'https://finance.naver.com/sise/sise_market_sum.nhn',
-                params={'sosok': market_code, 'page': page}, timeout=10
+                params={'sosok': market_code, 'page': page}
             )
             text = r.content.decode('euc-kr', errors='replace')
             soup = BeautifulSoup(text, 'html.parser')
@@ -57,6 +100,7 @@ def fetch_stock_list(market_code, pages):
             if not found: break
         except Exception as e:
             print(f'  [WARN] page {page}: {e}')
+            break   # 호스트가 응답하지 않는 상태에서 남은 페이지를 더 두드릴 이유가 없다
     seen, unique = set(), []
     for code, name, mktcap in results:
         if code not in seen:
@@ -71,7 +115,7 @@ def fetch_exclude_codes():
         ('https://finance.naver.com/api/sise/etnItemList.nhn', 'etnItemList'),
     ]:
         try:
-            for item in session.get(url, timeout=10).json()['result'][key]:
+            for item in naver_get(url).json()['result'][key]:
                 codes.add(item['itemcode'])
         except Exception as e:
             print(f'  [WARN] {url}: {e}')
@@ -92,16 +136,31 @@ all_stocks = [
 ]
 print(f'  최종: {len(all_stocks)}종목')
 
+# ── 온전성 검사 ①: 종목 리스트 ────────────────────────────────────────────────
+# 네이버가 안 되면 리스트가 비거나 반쪽이 된다. 그대로 진행하면 아래에서
+# IndexError 로 죽거나, 더 나쁘게는 정상 데이터를 반쪽으로 덮어쓴다.
+prev_count = 0
+try:
+    prev_count = int(firebase_db.reference('/v1/kr/stock_count').get() or 0)
+except Exception as e:
+    print(f'  [WARN] 기존 종목 수 조회 실패: {e}')
+stock_floor = int(prev_count * MIN_STOCK_RATIO) if prev_count else MIN_STOCK_ABS
+if len(all_stocks) < stock_floor:
+    skip(f'종목 {len(all_stocks)}개 < 하한 {stock_floor}개 '
+         f'(기존 {prev_count or "미상"}개) — 네이버 수집 실패로 판단')
+
 end_dt   = datetime.today()
 start_dt = end_dt - timedelta(days=int(HISTORY_DAYS * 1.5))
 start_str, end_str = start_dt.strftime('%Y%m%d'), end_dt.strftime('%Y%m%d')
 
 def fetch_prices(code):
     try:
-        r = session.get(
+        # tries=2: 종목당 호출이라 재시도를 늘리면 전체 시간이 종목 수만큼 불어난다
+        r = naver_get(
             f'https://api.stock.naver.com/chart/domestic/item/{code}/day',
+            tries=2,
             params={'startDateTime': start_str+'000000', 'endDateTime': end_str+'235959'},
-            timeout=15, headers={'Referer': 'https://finance.naver.com/'}
+            headers={'Referer': 'https://finance.naver.com/'}
         )
         if r.status_code != 200: return code, {}
         prices = {}
@@ -134,6 +193,11 @@ valid_dates = sorted(
 )
 print(f'  유효 날짜: {len(valid_dates)}일')
 
+# ── 온전성 검사 ②: 거래일 ─────────────────────────────────────────────────────
+# 아래에서 valid_dates[0], valid_dates[1] 을 쓴다. 2일 미만이면 전일 대비를 못 만든다.
+if len(valid_dates) < 2:
+    skip(f'유효 거래일 {len(valid_dates)}일 (2일 이상 필요) — 가격 수집 실패')
+
 # ── 지수 수집 ──────────────────────────────────────────────────────────────────
 # KOSPI·KOSPI200: NAVER chart API (GitHub Actions에서 작동 확인)
 # KOSDAQ 150: yfinance ^KQ11 (NAVER 미지원, 코스닥 종합으로 대체)
@@ -144,11 +208,10 @@ def _naver_idx(chart_code, name):
     today = datetime.today()
     start = today - timedelta(days=10)
     try:
-        r = session.get(
+        r = naver_get(
             f'https://api.stock.naver.com/chart/domestic/index/{chart_code}/day',
             params={'startDateTime': start.strftime('%Y%m%d') + '000000',
-                    'endDateTime':   today.strftime('%Y%m%d') + '235959'},
-            timeout=15
+                    'endDateTime':   today.strftime('%Y%m%d') + '235959'}
         )
         if r.status_code != 200:
             print(f'  [WARN] {name} NAVER/{chart_code}: HTTP {r.status_code}')
@@ -230,7 +293,8 @@ indices_history = {d: existing_indices[d] for d in all_idx_dates[:400]}
 
 firebase_db.reference('/v1/kr').set({
     'updated': valid_dates[0], 'collected_at': collected_at,
-    'stocks': stocks_data, 'dates': valid_dates, 'prices': prices_data,
+    'stocks': stocks_data, 'stock_count': len(stocks_data),
+    'dates': valid_dates, 'prices': prices_data,
     'indices': indices_history
 })
 print(f'[KR] 완료! ({time.time()-t0:.0f}초)')
