@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: '*/5 * * * *'    # 5분마다 (public 저장소 무제한)
   workflow_dispatch:           # 수동 실행 버튼
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -17,27 +18,56 @@ jobs:
       - name: Install packages
         run: pip install -r requirements.txt
 
+      # 각 시장은 서로 독립이다. continue-on-error 가 없으면 한 시장의 외부 사이트
+      # 장애가 뒤 스텝을 전부 skip 시켜 대시보드 전체가 멈춘다.
+      #   실측: 2026-08-01(토) 네이버 접속 불가로 KR 이 죽고 US/JP/CN/FX 가 10시간 반 skip.
+      # 실패 자체는 마지막 스텝에서 모아 job 을 빨갛게 만든다.
       - name: Fetch KR data
+        id: kr
+        continue-on-error: true
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: python fetch_kr.py
 
       - name: Fetch US data
+        id: us
+        continue-on-error: true
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: python fetch_us.py
 
       - name: Fetch JP data
+        id: jp
+        continue-on-error: true
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: python fetch_jp.py
 
       - name: Fetch CN data
+        id: cn
+        continue-on-error: true
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: python fetch_cn.py
 
       - name: Fetch FX rates
+        id: fx
+        continue-on-error: true
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: python fetch_fx.py
+
+      - name: Report failures
+        if: always()
+        run: |
+          failed=""
+          if [ "${{ steps.kr.outcome }}" != "success" ]; then failed="$failed kr"; fi
+          if [ "${{ steps.us.outcome }}" != "success" ]; then failed="$failed us"; fi
+          if [ "${{ steps.jp.outcome }}" != "success" ]; then failed="$failed jp"; fi
+          if [ "${{ steps.cn.outcome }}" != "success" ]; then failed="$failed cn"; fi
+          if [ "${{ steps.fx.outcome }}" != "success" ]; then failed="$failed fx"; fi
+          if [ -n "$failed" ]; then
+            echo "::error::수집 실패:$failed (나머지 시장은 정상 갱신됨)"
+            exit 1
+          fi
+          echo "전 시장 수집 성공"

@@ -41,7 +41,18 @@ jobs:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          # 한 시장이 실패해도 나머지는 계속 돌리되, 끝에서 job 을 실패로 만든다.
+          # 예전 `|| echo "::warning::"` 는 실패를 삼켜서 런이 항상 success 로 보였다
+          # (generate_review.py 의 NameError 가 그래서 오래 안 드러났다).
+          failed=""
           for m in ${{ steps.mkt.outputs.markets }}; do
             echo "=================== $m ==================="
-            python generate_review.py --market "$m" || echo "::warning::$m 리뷰 실패"
+            if ! python generate_review.py --market "$m"; then
+              echo "::error::$m 리뷰 실패"
+              failed="$failed $m"
+            fi
           done
+          if [ -n "$failed" ]; then
+            echo "리뷰 실패 시장:$failed"
+            exit 1
+          fi
