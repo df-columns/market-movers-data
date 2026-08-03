@@ -977,7 +977,7 @@ def main():
     fb_ref(f'/reviews/{market}').set(payload)                # 최신본 (index.html 호환)
     fb_ref(f'/reviews_history/{market}/{date}').set(payload)  # 날짜별 아카이브
     print(f'[{market}] 완료! (게시: {ts}  ·  기준일 {date}  ·  '
-          f'재료확인 {found}/{len(results)}  ·  {len(html_doc):,} bytes)')
+          f'재료확인 {len(results) - unknown}/{len(results)}  ·  {len(html_doc):,} bytes)')
 
 
 if __name__ == '__main__':
