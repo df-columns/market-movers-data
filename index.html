@@ -162,8 +162,9 @@ table{min-width:660px}
 .btn-claude:hover{background:#f5f3ff!important;border-color:#7c3aed!important;color:#7c3aed!important}
 .btn-review{color:#0369a1}
 .btn-review:hover{background:#f0f9ff!important;border-color:#0369a1!important;color:#0369a1!important}
-.btn-weekly{color:#059669}
-.btn-weekly:hover{background:#ecfdf5!important;border-color:#059669!important;color:#059669!important}
+.btn-refresh-review{color:#c2410c}
+.btn-refresh-review:hover{background:#fff7ed!important;border-color:#c2410c!important;color:#c2410c!important}
+.btn-refresh-review:disabled{opacity:.55;cursor:default;background:#fff!important;border-color:#e2e8f0!important;color:#94a3b8!important}
 /* ── 시장 리뷰 모달 ── */
 #review-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:9000;align-items:center;justify-content:center}
 #review-bg.show{display:flex}
@@ -462,7 +463,7 @@ table{min-width:660px}
       <div class="action-btns">
         <button class="btn-action btn-claude" id="btnClaude" style="display:none">🤖 Claude 분석</button>
         <button class="btn-action btn-review" id="btnReview">📰 시장 리뷰</button>
-        <button class="btn-action btn-weekly" id="btnWeekly">📑 주간 프롬프트</button>
+        <button class="btn-action btn-refresh-review" id="btnRefreshReview">🔄 리뷰 갱신</button>
         <button class="btn-action btn-collect" id="btnCollect" style="display:none">⚡ 데이터 수집</button>
       </div>
     </div>
@@ -1027,12 +1028,10 @@ function setupUI() {
   // Claude 분석 버튼
   document.getElementById('btnClaude').addEventListener('click', () => runClaudeAnalysis());
 
-  // 주간 리포트 프롬프트 (복사 전용)
-  document.getElementById('btnWeekly').addEventListener('click', () => openWeeklyPrompt());
-
   // 시장 리뷰 버튼 → 달력(아카이브) 모달
   // '📰 시장 리뷰' = 그날 리포트를 바로 전체화면으로. 아카이브는 뷰어 안에서 한 번 더.
   document.getElementById('btnReview').addEventListener('click', () => openReviewFull());
+  document.getElementById('btnRefreshReview').addEventListener('click', () => requestReviewRefresh());
   document.getElementById('rv-full-close').addEventListener('click', () => closeReviewFull());
   document.getElementById('rv-full-print').addEventListener('click', () => rvFullPrint());
   document.getElementById('rv-full-in').addEventListener('click', () => rvFullStepZoom(1));
@@ -1375,130 +1374,6 @@ ${idxCardsInstruction}
 [표 컬럼]
 ${colHeader}`;
 }
-
-
-// ── 주간 리포트 프롬프트 (1W 랭킹 · 1W/1M/YTD 수익률 제공) ─────────────────────
-// YTD: 기준일이 속한 해의 시작(전년 마지막 거래일 종가) 대비 오프셋(거래일 수) 계산
-function ytdOffset(di) {
-  const jan1 = DATES[di].slice(0, 4) + '-01-01';
-  let firstInYear = di, prevYearLast = -1;
-  for (let k = di; k < DATES.length; k++) {
-    if (DATES[k] >= jan1) firstInYear = k;   // 올해 거래일 (가장 오래된 쪽으로 갱신)
-    else { prevYearLast = k; break; }        // 전년 마지막 거래일
-  }
-  return (prevYearLast >= 0 ? prevYearLast : firstInYear) - di;
-}
-
-function generateWeeklyPrompt() {
-  const di     = selDateIdx;
-  const date   = DATES[di];
-  const market = isUS ? '미국' : currentTab === 'jp' ? '일본' : currentTab === 'cn' ? '중국' : '한국';
-  const codeLabel = isUS ? 'Ticker' : '종목코드';
-
-  const { top10, bot10 } = getTopBottom(di, '1W');
-  const idxOf = {};
-  STOCKS.forEach((s, i) => { idxOf[s.c] = i; });
-  const ytdOff = ytdOffset(di);
-
-  const pct = v => (v === null || v === undefined) ? '?' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
-  const dOf = off => (di + off < DATES.length) ? DATES[di + off] : '데이터부족';
-
-  const line = (s, i) => {
-    const w = s.rets['1W'], m = s.rets['1M'];
-    const y = calcRet(di, ytdOff, idxOf[s.code]);
-    return `${String(i + 1).padStart(2, ' ')}. ${s.name} (${s.code})  |  1W ${pct(w)}  ·  1M ${pct(m)}  ·  YTD ${pct(y)}`;
-  };
-
-  const upSkill = `# 역할
-${market} 증시에서 특정 기간(여기서는 1주) 동안 크게 오른 종목의 "회사 정체성 + 상승 배경"을
-위클리 브리핑용 4문장 불릿으로 정리한다.
-
-# 사전 작업 (반드시 웹검색 먼저)
-1. 회사 개요: 핵심사업 + 주요고객/경쟁우위 확인
-2. 기간 내 상승 촉매 확인: 공시·실적·수주·임상·수급·정책/테마·목표가 변동 등
-3. 단일 촉매인지, 시장 전체 흐름(섹터·테마 강세)인지 구분. 특히 지수가 하락한 주면 "역행 강세" 성격인지 판단.
-4. 확인 안 된 내용은 단정하지 말 것 (사실 기반, 출처 attribution 우선)
-
-# 출력 형식
-- 종목당 대시(-) 4문장
-- 1문장 = 뭐하는 회사인지 (①핵심사업 ②주요고객/경쟁우위)
-- 2~4문장 = 이번 기간 상승 이유 (인과 구조로, 사실 기반)
-- 문장 끝에 마침표 없음, 명사/어간으로 종결 (경신·평가·부각·기대·상향·집중·이동 등)
-
-# 형식 기준 예시
-- 브이엠 — 플라즈마 소스 원천기술로 반도체 건식 식각장비를 국산화해 SK하이닉스에 다량 납품하는 전공정 장비사
-- AI·HBM 투자 확대로 SK하이닉스가 식각장비 발주를 늘리며 국산 장비 공급사로 매수세 집중
-- 2026년 초 누적 수주 1,431억원으로 작년 연간 수주를 이미 넘어섰고 1분기 영업이익도 폭증
-- M15X 신규 팹·미세공정 전환 수혜가 하반기까지 지속될 전망에 최선호주 등극하며 사상 최고가 경신`;
-
-  const downSkill = `# 역할
-${market} 증시에서 특정 기간(여기서는 1주) 동안 크게 내린 종목의 "회사 정체성 + 하락 배경"을
-위클리 브리핑용 4문장 불릿으로 정리한다. (위 상승 스킬을 하락용으로 그대로 미러링)
-
-# 사전 작업 (반드시 웹검색 먼저)
-1. 회사 개요: 핵심사업 + 주요고객/경쟁우위 확인
-2. 기간 내 하락 촉매 확인: 실적쇼크·악재 공시·수주취소·규제·소송·수급 이탈·목표가 하향·테마 약세 등
-3. 단일 악재인지, 시장 전체 약세인지 구분. 특히 지수가 상승한 주면 "역행 약세" 성격인지 판단.
-4. 확인 안 된 내용은 단정하지 말 것 (사실 기반, 출처 attribution 우선)
-
-# 출력 형식
-- 종목당 대시(-) 4문장
-- 1문장 = 뭐하는 회사인지 (①핵심사업 ②주요고객/경쟁우위)
-- 2~4문장 = 이번 기간 하락 이유 (인과 구조로, 사실 기반)
-- 문장 끝에 마침표 없음, 명사/어간으로 종결 (축소·둔화·이탈·하향·우려·경계·차익실현 등)
-
-# 형식 기준 예시
-- ○○○ — △△ 핵심사업을 하는 회사 (①핵심사업 ②주요고객/경쟁우위)
-- 실적 쇼크·악재로 이번 주 급락한 인과 3문장 (명사/어간 종결)`;
-
-  return `아래는 ${market} 증시에서 최근 1주일(1W) 동안 등락이 가장 컸던 종목 리스트야.
-내 프로젝트에 등록된 [급등 종목 상승배경 정리 스킬]과 동일한 기준으로, 아래 20개 종목에 대한 주간 분석 리포트를 만들어줘.
-(스킬 전문을 아래에 그대로 포함했고, 하락 종목용은 같은 형식으로 미러링해 뒀어.)
-
-━━━ 기준 정보 ━━━
-기준일: ${date}  |  랭킹 기준: 1주 등락률(1W)  |  시장: ${market}
-수익률 3종:  1W = 1주 전(${dOf(OFFSETS['1W'])}) 대비  ·  1M = 1개월 전(${dOf(OFFSETS['1M'])}) 대비  ·  YTD = 연초(${dOf(ytdOff)}) 대비
-
-━━━ ▲ 상승 TOP 10 (1주 기준) ━━━
-${top10.map(line).join('\n')}
-
-━━━ ▼ 하락 TOP 10 (1주 기준) ━━━
-${bot10.map(line).join('\n')}
-
-━━━ 분석 스킬 (이 형식·문체 그대로 적용) ━━━
-
-【상승 종목 — 급등 배경 정리 스킬】
-${upSkill}
-
-【하락 종목 — 급락 배경 정리 스킬 (미러링)】
-${downSkill}
-
-━━━ 출력 지시 (HTML 리포트) ━━━
-
-1. ★가장 중요★ 결과를 하나의 완성된 HTML 문서로 만들어줘.
-   • claude.ai면: "HTML" 유형 아티팩트(Artifact)로 생성 (우측 상단에서 .html 다운로드 가능).
-   • Claude Code 등 파일 생성 가능 환경이면: weekly-report.html 파일로 실제 생성.
-   • <!DOCTYPE html>부터 </html>까지 외부 CDN·폰트 링크 없이 인라인 스타일만 사용한 독립 실행 파일. 더블클릭하면 바로 열려야 해.
-2. 각 종목은 웹검색으로 사실 확인 후 위 스킬 형식(대시 4문장, 48~60자, 명사·어간 종결)을 정확히 지켜서 작성.
-   확인 안 된 내용은 단정하지 말고, 위에 제공한 1W/1M/YTD 수치는 그대로 사용(재조회 불필요).
-
-━━━ 섹션 순서 ━━━
-① 제목 + 메타(기준일·기간·시장)   ② 주간 총평(불릿 2~3개: 주도 테마·섹터 로테이션·시사점)
-③ 상승 TOP 10   ④ 하락 TOP 10
-
-━━━ 디자인 가이드 ━━━
-• 전체 톤: 금융 리포트 스타일, 단정하고 읽기 쉽게, 색 과하지 않게. 한국어 'Noto Sans KR', sans-serif.
-• 페이지: 가로 210mm(A4 폭) 흰 종이가 회색 배경 위에 놓인 느낌(margin:0 auto; padding:12mm; box-shadow). 길이는 내용만큼 여러 장 가능.
-• CSS에 포함: @page { size:A4 portrait; margin:12mm } / @media print { body{-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff} .page{box-shadow:none;margin:0} }
-• 섹션 헤더: 네이비(#1e3a5f) 배경 흰 글씨 + 좌측 굵은 accent bar. 섹션 카드: 흰 배경 + 연한 테두리(#e2e8f0).
-• 종목 블록(카드) 구조 — 각 종목마다:
-    · 헤더 한 줄: 왼쪽 "종목명 (${codeLabel})" 굵게, 오른쪽에 수익률 3개 뱃지 → 1W / 1M / YTD
-      (상승=초록 #16a34a·bg #f0fdf4, 하락=빨강 #dc2626·bg #fff1f2, 값 부호에 따라 색 지정)
-    · 그 아래 대시(-) 4문장 불릿 (8~9pt, 줄바꿈 허용, 검정 텍스트)
-• 상승 섹션 종목은 초록 계열 포인트, 하락 섹션은 빨강 계열 포인트로 좌측 바 색만 구분.
-• 폰트: 제목 15pt, 섹션헤더 11pt, 종목명 10pt, 수익률 뱃지 9pt, 본문 8~9pt.`;
-}
-
 
 // ── 클립보드 복사 (모바일/비보안 컨텍스트 폴백 포함) ──────────────────────────
 // navigator.clipboard 는 https/localhost 에서만 동작 → 모바일 http·file 에서는 execCommand 폴백 사용
@@ -2002,6 +1877,86 @@ function archOpenFullscreen() {
                  `📅 ${archViewedDate || ''}` + (archViewedSource === 'latest' ? '  ·  (최신본)' : ''));
 }
 
+// ── 수동 리뷰 갱신 요청 ───────────────────────────────────────────────────────
+// 브라우저에서 GitHub Actions 를 직접 부를 수 없다. 그러려면 actions:write 토큰이
+// 필요한데 이 페이지는 공개라 소스에 넣으면 그대로 노출된다(CONFIG.GITHUB_PAT 가
+// 비어 있는 이유). 그래서 요청만 Firebase 에 남기고, 항상 켜둔 PC 의 트리거 루프
+// (run_trigger_loop.ps1, 60초마다 확인)가 그걸 보고 workflow_dispatch 를 보낸다.
+//
+// 경로가 /analytics 인 이유: DB 규칙이 브라우저 쓰기를 reviews·reviews_history·
+// analytics 에만 허용한다(/requests 는 거부됨을 실측). 규칙을 고칠 수 있으면
+// /requests 로 옮기는 게 의미상 맞다.
+//
+// ⚠️ 비밀번호는 실수 방지용 잠금이다. 페이지 소스에 있으니 보안 장치가 아니다.
+//    다만 토큰이 노출되는 건 아니고, 이 경로는 원래 규칙상 누구나 쓸 수 있다.
+const REVIEW_REQ_PATH = 'analytics/review_request';
+const REVIEW_REQ_PASSWORD = '2610';
+let reviewReqTimer = null;
+
+async function requestReviewRefresh() {
+  const btn = document.getElementById('btnRefreshReview');
+  const tab = currentTab;
+  const label = MARKET_LABEL[tab] || tab;
+
+  const pw = prompt(`${label} 시장 리뷰를 다시 만들까요?\n\n비밀번호를 입력하세요.`);
+  if (pw === null) return;                       // 취소
+  if (pw.trim() !== REVIEW_REQ_PASSWORD) { alert('비밀번호가 맞지 않습니다.'); return; }
+
+  const before = await fetchReviewUpdatedAt(tab);
+  btn.disabled = true;
+  btn.textContent = '🔄 요청 전송 중...';
+  try {
+    const r = await fetch(`${CONFIG.FIREBASE_BASE}/${REVIEW_REQ_PATH}/${tab}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ at: new Date().toISOString(), market: tab, force: true, by: 'web' })
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '🔄 리뷰 갱신';
+    alert(`요청을 보내지 못했습니다: ${e.message}`);
+    return;
+  }
+  btn.textContent = '⏳ 생성 대기 중...';
+  waitForNewReview(tab, before);
+}
+
+async function fetchReviewUpdatedAt(tab) {
+  try {
+    const r = await fetch(`${CONFIG.FIREBASE_BASE}/reviews/${tab}/updated_at.json?t=${Date.now()}`);
+    return r.ok ? await r.json() : null;
+  } catch (e) { return null; }
+}
+
+// 새 리포트가 올라오면 버튼을 되돌리고 열려 있는 뷰어를 갱신한다.
+// 트리거 루프 확인(최대 60초) + Actions 실행(2~4분) 이라 넉넉히 12분까지 본다.
+function waitForNewReview(tab, before) {
+  const btn = document.getElementById('btnRefreshReview');
+  const deadline = Date.now() + 12 * 60 * 1000;
+  clearInterval(reviewReqTimer);
+  reviewReqTimer = setInterval(async () => {
+    if (currentTab !== tab) { done('🔄 리뷰 갱신'); return; }   // 탭을 옮기면 그만둔다
+    const now = await fetchReviewUpdatedAt(tab);
+    if (now && now !== before) {
+      done('✅ 갱신 완료');
+      setTimeout(() => { btn.textContent = '🔄 리뷰 갱신'; }, 4000);
+      if (document.getElementById('rv-full').classList.contains('show')) openReviewFull();
+      return;
+    }
+    if (Date.now() > deadline) {
+      done('🔄 리뷰 갱신');
+      alert('리뷰 생성이 12분 안에 끝나지 않았습니다.\n'
+            + 'PC 트리거 루프가 켜져 있는지, GitHub Actions 실행 결과를 확인해주세요.');
+    }
+  }, 15000);
+
+  function done(text) {
+    clearInterval(reviewReqTimer); reviewReqTimer = null;
+    btn.disabled = false; btn.textContent = text;
+  }
+}
+
 // ── 시장 리뷰 전체화면 뷰어 ───────────────────────────────────────────────────
 // '📰 시장 리뷰' 버튼이 여기로 온다. 현재 탭의 최신 리포트를 바로 전체화면에 띄운다.
 let rvFullHtml = null;
@@ -2351,20 +2306,6 @@ function renderMarkdown(text) {
 }
 
 // ── Claude 분석 실행 ──────────────────────────────────────────────────────────
-// 주간 리포트 프롬프트를 복사 모달에 표시 (API 호출 없음 — 붙여넣기 전용)
-function openWeeklyPrompt() {
-  if (!STOCKS || !STOCKS.length || !PRICES || PRICES.length < 2) {
-    alert('시장 데이터가 아직 로드되지 않았어요. 잠시 후 다시 시도해주세요.');
-    return;
-  }
-  const prompt = generateWeeklyPrompt();
-  const title = document.getElementById('claude-modal-title');
-  if (title) title.textContent = '📑 주간 리포트 프롬프트';
-  document.getElementById('claude-prompt-text').value = prompt;
-  showClaudeState('prompt');
-  document.getElementById('claude-bg').classList.add('show');
-}
-
 async function runClaudeAnalysis() {
   const prompt = generateClaudePrompt();
 
