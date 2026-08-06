@@ -691,16 +691,36 @@ def save_profiles(market, results):
 # 그래서 총평만은 웹검색을 허용한다 — 표에 있는 개별 재료를 합쳐도 '왜 금 현물이
 # 급등했나' 같은 매크로 원인은 나오지 않기 때문이다. 검색은 그 원인을 확인하는
 # 용도로만 쓰고, 없으면 없다고 쓰게 한다.
+_HANGUL = re.compile(r'[가-힣]')
+# 앞에 붙은 영어 안내문 한 문장을 떼어낸다.
+#   실측(2026-08-06 국내편): "I'll search for the macro cause behind this sharp
+#   drop first.코스피가 4.45% 밀리며…" — 모델이 검색을 시작하겠다는 말을 답변에
+#   흘렸고, 영어라 문장 분리에도 걸리지 않아 첫 줄에 그대로 실렸다.
+# 문자 클래스가 ASCII 뿐이라 한글을 넘어갈 수 없다 → 맨 앞의 순수 영문 문장만
+# 잘린다. '4.2% 상승. 반도체가…' 처럼 한글이 섞인 줄은 건드리지 않는다.
+_ASCII_PREAMBLE = re.compile(r"^[\x20-\x7E]*?[.!?]\s*(?=[가-힣])")
+
+# 앞머리 목록 기호. 숫자·하이픈 뒤에는 공백을 요구하는 게 핵심이다 —
+# 예전 규칙 `\d+[.)]\s*` 은 '4.2% 상승'의 '4.' 을 목록 번호로 먹어 '2% 상승'을
+# 만들었고, `[-…]+\s*` 는 '-1.2% 하락'의 부호를 떼어 '1.2% 하락'으로 뒤집었다.
+# 실제 목록은 '1. ', '3) ', '- ' 처럼 뒤에 공백이 온다.
+_LIST_MARKER = re.compile(r'^\s*(?:[•*]+\s*|[-+>#]+\s+|\d{1,2}[.)]\s+)')
+
+
 def _clean_overview_line(ln):
-    """모델이 붙인 불릿·번호·마크다운 기호를 떼어낸다.
+    """모델이 붙인 불릿·번호·마크다운 기호와 영어 안내문을 떼어낸다.
 
     프롬프트로 '기호 없이'를 지시해도 '**시황 총평 (2026-08-06)**' 같은 제목이나
     '- ' 불릿이 섞여 나온다. 기호만 떼면 제목이 항목 한 칸을 차지하므로,
-    호출자가 OVERVIEW_DROP_UNDER 로 걸러낸다.
+    호출자가 OVERVIEW_DROP_UNDER 와 한글 포함 여부로 걸러낸다.
     """
-    s = re.sub(r'^\s*(?:[-•*+>#]+|\d+[.)])\s*', '', ln or '')
+    s = _LIST_MARKER.sub('', ln or '')
     s = re.sub(r'\*\*|__|`', '', s)
-    return s.strip(' \t*_#>')
+    s = _ASCII_PREAMBLE.sub('', s)
+    # 남은 마크다운 강조만 떼어낸다. '#'·'>' 는 여기서 벗기지 않는다 —
+    # '#1 종목', '>50% 비중' 처럼 뜻이 있는 기호를 지워버리기 때문이다.
+    # 진짜 헤딩·인용은 뒤에 공백이 오므로 _LIST_MARKER 가 이미 처리했다.
+    return s.strip(' \t*_')
 
 
 def _split_overview_lines(lines):
@@ -778,7 +798,10 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 - 상승 또는 하락 종목이 없으면 그 사실을 그대로 반영하라.
 - ★ 제목·머리말·불릿 기호·번호·마크다운(**, ##)을 쓰지 마라.
   {OVERVIEW_LINES}줄의 문장만, 한 줄에 하나씩 출력하라. 다른 텍스트는 넣지 마라.
-- 한국어로 작성하라."""
+- ★ 무엇을 검색하겠다거나 무엇을 확인했다는 진행 상황을 답변에 쓰지 마라.
+  ("I'll search for…", "검색해 보겠다", "확인한 결과에 따르면" 등 금지)
+  첫 글자부터 바로 시황 문장으로 시작하라.
+- 전부 한국어로 작성하라. 영어 문장을 섞지 마라(고유명사·지표명은 예외)."""
 
     # 종목 리서치와 같은 이유로 예산을 넉넉히 준다(웹검색 결과 + thinking 이
     # 응답 예산을 같이 쓴다). 매크로 원인 확인에는 몇 번의 검색으로 충분하다.
@@ -796,7 +819,9 @@ def build_overview(client, market, date, idx_ctx, top, bot):
         text = ''.join(b.text for b in final.content if b.type == 'text')
         lines = [_clean_overview_line(ln) for ln in text.strip().splitlines()]
         # 제목·구분선 제거 (항목 하한이 55자이므로 20자 미만은 항목이 아니다)
-        lines = [ln for ln in lines if len(ln) >= OVERVIEW_DROP_UNDER]
+        # 한글이 없는 줄은 모델의 영어 안내문이다 — 항목이 아니다.
+        lines = [ln for ln in lines
+                 if len(ln) >= OVERVIEW_DROP_UNDER and _HANGUL.search(ln)]
         # 자르기 전에 문장 단위로 되쪼갠다 — 합쳐 낸 줄을 그냥 자르면 내용이 날아간다
         lines = _split_overview_lines(lines)
         over = [ln for ln in lines if len(ln) > OVERVIEW_CLIP]
@@ -1193,6 +1218,27 @@ def self_test(out_path):
     assert len(_clean_overview_line('**시황 총평 (2026-08-06)**')) < OVERVIEW_DROP_UNDER, \
         '제목 필터 기준(20자)이 제목을 못 걸러낸다'
     assert len(overview[0]) >= OVERVIEW_DROP_UNDER, '실제 총평 줄이 필터에 걸린다'
+
+    # 앞에 붙은 영어 안내문 제거 (실측: 국내편 첫 줄에 모델의 진행 상황이 실렸다)
+    leaked = ("I'll search for the macro cause behind this sharp drop first."
+              "코스피가 4.45% 밀리며 반도체 대형주 하락이 지수를 지배했다.")
+    assert _clean_overview_line(leaked) == \
+        '코스피가 4.45% 밀리며 반도체 대형주 하락이 지수를 지배했다.', \
+        f'영어 안내문 제거 실패: {_clean_overview_line(leaked)!r}'
+    # 숫자·부호로 시작하는 정상 줄은 건드리지 않는다.
+    # (예전 규칙은 '4.2%' 의 '4.' 를 목록 번호로, '-1.2%' 의 '-' 를 불릿으로 먹었다)
+    for keep_line in ('4.2% 상승. 반도체가 지수를 이끌었다.',
+                      '-1.2% 하락한 코스닥이 지수 발목을 잡았다.',
+                      '10.5% 급등한 금광주가 상승을 주도했다.',
+                      'S&P 500이 0.3% 올랐고 나스닥은 밀렸다.',
+                      'OPEC+ 9월 증산 합의로 유가가 5% 급락했다.',
+                      '#1 종목이 지수를 끌어올렸다.',
+                      'AI 관련 하드웨어에 매물이 쏟아졌다.'):
+        assert _clean_overview_line(keep_line) == keep_line, \
+            f'정상 줄이 훼손됨: {keep_line!r} -> {_clean_overview_line(keep_line)!r}'
+    # 한글이 아예 없는 줄은 항목이 아니다
+    assert not _HANGUL.search('Let me check the gold price first.'), '한글 감지 이상'
+    assert _HANGUL.search('금 현물이 급등했다.'), '한글 감지 이상'
     # 사유 분류·업종 딱지가 렌더링되지 않아야 한다.
     # (총평 산문에 '실적' 같은 단어가 정상적으로 등장하므로 단어가 아니라
     #  딱지 마크업 자체를 검사한다)
