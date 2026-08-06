@@ -87,6 +87,10 @@ OVERVIEW_MAX_CHARS = 95    # 총평 한 줄 목표 상한 (7pt 전폭에서 약 
 # → 순한글 78자/줄. 숫자·영문이 섞이면 100자도 한 줄에 들어간다.
 # 렌더에서 두 줄까지 허용하므로 순한글 기준 156자가 상한. 150 으로 둔다.
 OVERVIEW_CLIP      = 150
+# 이보다 짧은 줄은 총평 항목이 아니라 제목·구분선이다('**시황 총평 (2026-08-06)**').
+# 실측: 일본편에서 이 제목이 6줄 중 한 칸을 먹었다. 항목 하한이 55자이므로
+# 20자 미만은 안전하게 버릴 수 있다.
+OVERVIEW_DROP_UNDER = 20
 # 총평은 매크로 원인('왜 금이 올랐나')을 확인해야 하므로 웹검색을 준다.
 OVERVIEW_SEARCH_MAX_USES = 5
 
@@ -687,6 +691,18 @@ def save_profiles(market, results):
 # 그래서 총평만은 웹검색을 허용한다 — 표에 있는 개별 재료를 합쳐도 '왜 금 현물이
 # 급등했나' 같은 매크로 원인은 나오지 않기 때문이다. 검색은 그 원인을 확인하는
 # 용도로만 쓰고, 없으면 없다고 쓰게 한다.
+def _clean_overview_line(ln):
+    """모델이 붙인 불릿·번호·마크다운 기호를 떼어낸다.
+
+    프롬프트로 '기호 없이'를 지시해도 '**시황 총평 (2026-08-06)**' 같은 제목이나
+    '- ' 불릿이 섞여 나온다. 기호만 떼면 제목이 항목 한 칸을 차지하므로,
+    호출자가 OVERVIEW_DROP_UNDER 로 걸러낸다.
+    """
+    s = re.sub(r'^\s*(?:[-•*+>#]+|\d+[.)])\s*', '', ln or '')
+    s = re.sub(r'\*\*|__|`', '', s)
+    return s.strip(' \t*_#>')
+
+
 def _split_overview_lines(lines):
     """한 줄에 두 문장을 붙여 낸 경우 문장 단위로 쪼갠다.
 
@@ -751,13 +767,17 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 6) 투자자 관점 시사점 — 무엇을 확인해야 하는지
 
 ━━━ 작성 규칙 ━━━
-- 각 줄은 한 문장, {OVERVIEW_MIN_CHARS}~{OVERVIEW_MAX_CHARS}자.
+- ★ 각 줄은 한 문장, {OVERVIEW_MIN_CHARS}~{OVERVIEW_MAX_CHARS}자.
+  {OVERVIEW_CLIP}자를 넘기면 뒤가 잘려 사라진다. 한 줄에 두 가지를 담지 마라.
+  근거를 못 찾았다는 단서를 괄호로 덧붙이지 마라 — 필요하면 그 줄 자체를
+  "~은 확인되지 않았다"로 짧게 써라.
 - 확인한 숫자(금 온스당 가격, 금리, 환율, 지표치)는 넣어라. 새 정보라서 값이 있다.
 - 개별 종목명은 흐름을 설명하는 데 필요한 경우에만 쓰고, 나열하지 마라.
 - 자료에 없고 검색으로도 확인 못 한 사실을 추가하지 마라.
 - 여러 종목이 "확인된_뉴스_없음"이면 그 사실 자체가 시황이다(수급 장세).
 - 상승 또는 하락 종목이 없으면 그 사실을 그대로 반영하라.
-- 불릿 기호·번호 없이 각 줄에 문장만 출력하라({OVERVIEW_LINES}줄).
+- ★ 제목·머리말·불릿 기호·번호·마크다운(**, ##)을 쓰지 마라.
+  {OVERVIEW_LINES}줄의 문장만, 한 줄에 하나씩 출력하라. 다른 텍스트는 넣지 마라.
 - 한국어로 작성하라."""
 
     # 종목 리서치와 같은 이유로 예산을 넉넉히 준다(웹검색 결과 + thinking 이
@@ -774,10 +794,15 @@ def build_overview(client, market, date, idx_ctx, top, bot):
             messages=[{'role': 'user', 'content': prompt}],
         )
         text = ''.join(b.text for b in final.content if b.type == 'text')
-        lines = [re.sub(r'^\s*[-•*]\s*|^\s*\d+[.)]\s*', '', ln).strip()
-                 for ln in text.strip().splitlines() if ln.strip()]
+        lines = [_clean_overview_line(ln) for ln in text.strip().splitlines()]
+        # 제목·구분선 제거 (항목 하한이 55자이므로 20자 미만은 항목이 아니다)
+        lines = [ln for ln in lines if len(ln) >= OVERVIEW_DROP_UNDER]
         # 자르기 전에 문장 단위로 되쪼갠다 — 합쳐 낸 줄을 그냥 자르면 내용이 날아간다
-        lines = _split_overview_lines([ln for ln in lines if ln])
+        lines = _split_overview_lines(lines)
+        over = [ln for ln in lines if len(ln) > OVERVIEW_CLIP]
+        if over:
+            print(f'  [WARN] 총평 {len(over)}줄이 {OVERVIEW_CLIP}자 초과 — 잘립니다 '
+                  f'(최장 {max(len(ln) for ln in over)}자)')
         lines = [clip(ln, OVERVIEW_CLIP) for ln in lines][:OVERVIEW_LINES]
         if not lines:
             print(f'  [WARN] 총평 비어 있음 — {_describe_stop(final, text)}')
@@ -1157,6 +1182,17 @@ def self_test(out_path):
     assert _split_overview_lines([keep]) == [keep], '소수점에서 잘못 나뉨'
     assert _split_overview_lines(['마침표 없는 줄']) == ['마침표 없는 줄.'], '종결 보정 실패'
     assert _split_overview_lines(['', '  ']) == [], '빈 줄 처리 이상'
+
+    # 마크다운·불릿 기호 제거 (실측: 일본편에 '**시황 총평 (2026-08-06)**' 제목이 섞였다)
+    assert _clean_overview_line('**시황 총평 (2026-08-06)**') == '시황 총평 (2026-08-06)'
+    assert _clean_overview_line('- 반도체가 지수를 끌어올렸다.') == '반도체가 지수를 끌어올렸다.'
+    assert _clean_overview_line('3) 업종이 갈렸다.') == '업종이 갈렸다.'
+    assert _clean_overview_line('## 제목') == '제목'
+    assert _clean_overview_line('• `코드` 표기') == '코드 표기'
+    # 제목은 20자 미만이라 걸러진다
+    assert len(_clean_overview_line('**시황 총평 (2026-08-06)**')) < OVERVIEW_DROP_UNDER, \
+        '제목 필터 기준(20자)이 제목을 못 걸러낸다'
+    assert len(overview[0]) >= OVERVIEW_DROP_UNDER, '실제 총평 줄이 필터에 걸린다'
     # 사유 분류·업종 딱지가 렌더링되지 않아야 한다.
     # (총평 산문에 '실적' 같은 단어가 정상적으로 등장하므로 단어가 아니라
     #  딱지 마크업 자체를 검사한다)
