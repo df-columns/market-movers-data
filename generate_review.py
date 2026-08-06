@@ -65,24 +65,33 @@ PAUSE_RESUME_MAX    = 8    # 웹검색 pause_turn 재개 한도
 #     공백             1
 #     '추정 ' 접두어    약 3.1  (신뢰도 low 인 행만)
 #     등락 배경        REASON_CLIP
-#     각주 첨자        약 1.3  ('[20]' 을 5.4pt 로 찍은 폭)
-#   처음엔 뒤 두 항목을 빼먹고 40+60 이면 된다고 봤는데 합계가 109자가 되어
-#   3줄로 넘어갔다. 38+1+3.1+58+1.3 = 101.4자 → 110자 예산 안에 9자 여유.
+#   처음엔 '추정 ' 접두어와 (당시 있던) 각주 첨자를 빼먹고 40+60 이면 된다고
+#   봤는데 합계가 109자가 되어 3줄로 넘어갔다. 출처를 없앤 뒤 첨자 몫이
+#   빠져서: 40+1+3.1+62 = 106.1자 → 110자 예산 안에 4자 여유.
 PROFILE_MIN_CHARS = 26     # 회사 소개 목표 하한(프롬프트용)
-PROFILE_MAX_CHARS = 34     # 회사 소개 목표 상한(프롬프트용)
-REASON_MIN_CHARS  = 40     # 등락 배경 목표 하한(프롬프트용)
-REASON_MAX_CHARS  = 54     # 등락 배경 목표 상한(프롬프트용)
+PROFILE_MAX_CHARS = 36     # 회사 소개 목표 상한(프롬프트용)
+REASON_MIN_CHARS  = 44     # 등락 배경 목표 하한(프롬프트용)
+REASON_MAX_CHARS  = 58     # 등락 배경 목표 상한(프롬프트용)
 # 렌더 단계 하드 캡 — 프롬프트 한도를 모델이 넘겨도 2줄이 유지되게 한다.
 # 프롬프트 한도보다 여유를 두었으므로 평소에는 걸리지 않는다.
-PROFILE_CLIP = 38
-REASON_CLIP  = 58
+PROFILE_CLIP = 40
+REASON_CLIP  = 62
 NAME_CLIP    = 40          # 종목명 열 하드 캡 (아래 NAME_NOISE 로 꼬리표를 떼고 나서)
+
+# 시황 총평 줄 수. 개별 종목 배경보다 시장 전체 흐름을 두껍게 싣는다.
+# 출처 목록(약 90px)을 뺀 자리를 여기에 돌렸다.
+OVERVIEW_LINES     = 6
+OVERVIEW_MIN_CHARS = 55    # 총평 한 줄 목표 하한
+OVERVIEW_MAX_CHARS = 95    # 총평 한 줄 목표 상한 (7pt 전폭에서 약 1.4줄)
+OVERVIEW_CLIP      = 110   # 총평 한 줄 하드 캡 (렌더에서 두 줄까지 허용)
+# 총평은 매크로 원인('왜 금이 올랐나')을 확인해야 하므로 웹검색을 준다.
+OVERVIEW_SEARCH_MAX_USES = 5
 
 # 위 회계를 코드로 못박는다. 캡을 올리다 예산을 넘기면 import 단계에서 바로 터진다
 # — 조용히 3줄이 되어 A4 두 장으로 새는 것보다 낫다.
 MERGED_LINE_CHARS  = 55    # 실측: 합친 칸 내부폭 473px / 한글 8.46px
 MERGED_MAX_LINES   = 2
-_MERGED_OVERHEAD   = 1 + 3.1 + 1.3        # 공백 + '추정 ' + 각주 첨자
+_MERGED_OVERHEAD   = 1 + 3.1              # 공백 + '추정 ' (각주 첨자는 없앴다)
 _MERGED_BUDGET     = MERGED_LINE_CHARS * MERGED_MAX_LINES
 _MERGED_USED       = PROFILE_CLIP + REASON_CLIP + _MERGED_OVERHEAD
 assert _MERGED_USED <= _MERGED_BUDGET, (
@@ -309,10 +318,17 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
         if stock.get('ret5') is not None else "5거래일 누적 데이터 없음"
     )
     profile_rule = (
-        f"- profile: 이 회사의 핵심 사업을 한 문장({PROFILE_MIN_CHARS}~{PROFILE_MAX_CHARS}자)으로.\n"
-        "  무엇을 만들어 어디에 파는지만. 설립연도·지역·계열 관계·수사는 넣지 마라.\n"
-        "  예: \"메모리 반도체를 설계·생산해 글로벌 IT 제조사에 공급한다.\"\n"
-        f"  ※ 리포트에서 이 문장 바로 뒤에 reason 이 이어 붙는다. {PROFILE_MAX_CHARS}자를 넘기면 잘린다."
+        f"- profile: 이 회사의 핵심 사업을 {PROFILE_MIN_CHARS}~{PROFILE_MAX_CHARS}자로.\n"
+        "  ★ 반드시 명사형으로 끝내라. 서술어('~한다', '~이다', '~하는 기업')를 쓰지 마라.\n"
+        "  마침표도 찍지 마라. 무엇을 만들어 누구에게 파는지만 남긴다.\n"
+        "  설립연도·지역·계열 관계·수사는 넣지 마라.\n"
+        "  좋은 예: \"온라인 쇼핑몰 구축·결제 플랫폼을 전세계 판매자에 제공\"\n"
+        "           \"메모리 반도체를 설계·생산해 글로벌 IT 제조사에 공급\"\n"
+        "           \"금·은 광산을 운영해 정광과 지금 판매\"\n"
+        "  나쁜 예: \"온라인 쇼핑몰 구축과 결제 플랫폼을 전세계 판매자에 제공한다.\"\n"
+        "           \"세계적인 전자상거래 솔루션을 제공하는 글로벌 기업이다.\"\n"
+        f"  ※ 리포트에서 이 구절 바로 뒤에 reason 이 이어 붙는다. "
+        f"{PROFILE_MAX_CHARS}자를 넘기면 잘린다."
         if need_profile else
         '- profile: 빈 문자열("")로 두어라. 이미 확보돼 있다.'
     )
@@ -612,6 +628,15 @@ def collapse_sector_duplicates(rows):
     return collapsed
 
 
+def _profile_is_current(p):
+    """캐시된 회사 소개가 지금 규격(짧고, 명사형 종결)에 맞는지."""
+    t = (p or '').strip()
+    if not t or len(t) > PROFILE_CLIP:
+        return False
+    # 서술형 종결('~한다', '~이다', '~공급함') 과 마침표는 옛 형식이다.
+    return not re.search(r'[다요음임]$|\.$', t)
+
+
 def load_profiles(market, codes):
     """회사 소개 캐시 조회 — 매일 다시 쓰지 않고 재사용해 예산을 등락배경에 몰아준다"""
     try:
@@ -629,10 +654,11 @@ def load_profiles(market, codes):
             age = (today - datetime.strptime(rec.get('u', '1970-01-01'), '%Y-%m-%d').date()).days
         except Exception:
             age = 10 ** 6
-        # 캐시에 남아 있는 옛 긴 소개(60~90자)는 캐시 미스로 처리해 다시 쓰게 한다.
-        # 1페이지 레이아웃은 짧은 소개를 전제로 하고, 캐시 TTL 이 180일이라
-        # 그냥 두면 반년 동안 긴 소개가 표를 밀어낸다.
-        if age <= PROFILE_TTL_DAYS and len(rec['p']) <= PROFILE_CLIP:
+        # 캐시에 남아 있는 옛 소개는 캐시 미스로 처리해 새 규격으로 다시 쓰게 한다.
+        # 캐시 TTL 이 180일이라 그냥 두면 반년 동안 옛 형식이 표에 남는다.
+        #   - 긴 것(60~90자): 1페이지 레이아웃이 짧은 소개를 전제로 한다.
+        #   - 서술형('~한다.'): 이제 명사형으로 끝내기로 했다.
+        if age <= PROFILE_TTL_DAYS and _profile_is_current(rec['p']):
             out[code] = rec['p']
     return out
 
@@ -652,7 +678,11 @@ def save_profiles(market, results):
         return 0
 
 
-# ── 2단계: 총평 ────────────────────────────────────────────────────────────────
+# ── 2단계: 시황 총평 ───────────────────────────────────────────────────────────
+# 개별 종목 배경은 표에서 두 줄로 끊기니, 시장 전체를 읽는 몫은 여기가 진다.
+# 그래서 총평만은 웹검색을 허용한다 — 표에 있는 개별 재료를 합쳐도 '왜 금 현물이
+# 급등했나' 같은 매크로 원인은 나오지 않기 때문이다. 검색은 그 원인을 확인하는
+# 용도로만 쓰고, 없으면 없다고 쓰게 한다.
 def build_overview(client, market, date, idx_ctx, top, bot):
     def brief(rows):
         if not rows:
@@ -664,7 +694,8 @@ def build_overview(client, market, date, idx_ctx, top, bot):
             + f"] {r['reason'][:110]}"
             for r in rows)
 
-    prompt = f"""{date} {MARKET_NAME.get(market, market)} 증시 데일리 브리핑의 '총평'을 작성하라.
+    lang = SEARCH_LANG.get(market, '현지어')
+    prompt = f"""{date} {MARKET_NAME.get(market, market)} 증시 데일리 브리핑의 '시황 총평'을 작성하라.
 
 시장 지수: {idx_ctx}
 
@@ -676,27 +707,60 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 
 각 항목의 대괄호는 [사유분류/업종/개별재료 유무]다.
 
-위 자료만 근거로, 오늘 시장을 관통하는 흐름을 불릿 3개로 정리하라.
-- 각 불릿은 한 문장, 50~80자. (리포트가 A4 한 장이라 분량이 곧 지면이다)
-- 반복되는 섹터·테마 / 상승과 하락을 가른 축 / 투자자 관점 시사점 순서로.
-- 같은 업종이 여러 종목에 걸쳐 나타나면 그 업종을 우선 언급하라.
-- 자료에 없는 사실을 추가하지 마라. 여러 종목이 "확인된_뉴스_없음"이면 그 사실 자체를 언급하라.
-- 상승 또는 하락 종목이 없으면 그 사실을 그대로 반영하라.
-- 불릿 기호 없이 각 줄에 문장만 출력하라(3줄)."""
+━━━ 이 총평의 역할 ━━━
+리포트 표에는 종목별 배경이 두 줄씩 들어간다. 그건 이미 있으니 여기서 반복하지 마라.
+여기서 필요한 건 개별 종목 나열이 아니라 **시장 전체를 관통하는 흐름과 그 원인**이다.
+"무엇이 올랐다"가 아니라 "왜 그것이 올랐고 그래서 무엇이 갈렸는가"를 써라.
 
+━━━ 인과관계를 반드시 드러내라 (가장 중요) ━━━
+오늘 시장을 움직인 축이 있으면 그 축의 **원인**을 한 줄 배정해 설명하라.
+예: 금·은 관련주가 몰려 올랐다면 → "금 현물이 올랐다"에서 멈추지 말고,
+    왜 올랐는지(실질금리 하락 / 중앙은행 매수 / 지정학 리스크 / 달러 약세 등)를 적어라.
+위 자료의 개별 재료만으로 매크로 원인을 알 수 없으면 웹검색으로 확인하라.
+{lang} 또는 영어로 "{date} 금 가격 급등 이유" 같은 식으로 원인을 직접 검색하라.
+검색해도 원인이 확인되지 않으면 "원인은 확인되지 않았다"고 쓰고 지어내지 마라.
+
+━━━ 구성 ({OVERVIEW_LINES}줄) ━━━
+1) 오늘 시장을 지배한 축 하나 — 무엇이 움직였는지
+2) 그 축이 왜 생겼는지 — 원인·배경 (매크로 지표, 정책, 수급, 상품가격 등)
+3) 그 축이 업종별로 어떻게 갈라졌는지 — 수혜와 피해
+4) 지수와 개별 종목의 괴리 또는 두 번째 테마
+5) 상승과 하락을 가른 기준 — 실적인지 테마인지 수급인지
+6) 투자자 관점 시사점 — 무엇을 확인해야 하는지
+
+━━━ 작성 규칙 ━━━
+- 각 줄은 한 문장, {OVERVIEW_MIN_CHARS}~{OVERVIEW_MAX_CHARS}자.
+- 확인한 숫자(금 온스당 가격, 금리, 환율, 지표치)는 넣어라. 새 정보라서 값이 있다.
+- 개별 종목명은 흐름을 설명하는 데 필요한 경우에만 쓰고, 나열하지 마라.
+- 자료에 없고 검색으로도 확인 못 한 사실을 추가하지 마라.
+- 여러 종목이 "확인된_뉴스_없음"이면 그 사실 자체가 시황이다(수급 장세).
+- 상승 또는 하락 종목이 없으면 그 사실을 그대로 반영하라.
+- 불릿 기호·번호 없이 각 줄에 문장만 출력하라({OVERVIEW_LINES}줄).
+- 한국어로 작성하라."""
+
+    # 종목 리서치와 같은 이유로 예산을 넉넉히 준다(웹검색 결과 + thinking 이
+    # 응답 예산을 같이 쓴다). 매크로 원인 확인에는 몇 번의 검색으로 충분하다.
     try:
         final = _stream_final(
             client,
             model=CLAUDE_MODEL,
-            max_tokens=4000,
+            max_tokens=RESEARCH_MAX_TOKENS,
             thinking={'type': 'adaptive'},
-            output_config={'effort': 'low'},
+            output_config={'effort': 'medium'},
+            tools=[{'type': 'web_search_20260209', 'name': 'web_search',
+                    'max_uses': OVERVIEW_SEARCH_MAX_USES}],
             messages=[{'role': 'user', 'content': prompt}],
         )
         text = ''.join(b.text for b in final.content if b.type == 'text')
         lines = [re.sub(r'^\s*[-•*]\s*|^\s*\d+[.)]\s*', '', ln).strip()
                  for ln in text.strip().splitlines() if ln.strip()]
-        return [ln for ln in lines if ln][:3] or ['총평을 생성하지 못했습니다.']
+        lines = [clip(ln, OVERVIEW_CLIP) for ln in lines if ln][:OVERVIEW_LINES]
+        if not lines:
+            print(f'  [WARN] 총평 비어 있음 — {_describe_stop(final, text)}')
+            return ['총평을 생성하지 못했습니다.']
+        if len(lines) < OVERVIEW_LINES:
+            print(f'  [WARN] 총평 {len(lines)}줄 (기대 {OVERVIEW_LINES}줄)')
+        return lines
     except Exception as e:
         print(f'  [WARN] 총평 생성 실패: {e}')
         return ['총평을 생성하지 못했습니다.']
@@ -779,13 +843,22 @@ def render_reason_prefix(confidence):
     return ''
 
 
-def render_table(rows, kind, footnotes, code_header, n_max=10):
+def render_table(rows, kind, code_header, n_max=10):
     """kind: 'up' | 'down'. rows 개수가 n_max보다 적으면 제목이 실제 개수를 반영한다.
 
     회사 소개와 등락 배경은 한 칸에 이어 쓴다. 두 열로 나누면 둘 중 긴 쪽이 행
     높이를 정해 짧은 쪽 자리가 통째로 버려지는데, 한 칸에 흘려 쓰면 그 낭비가
     없어져 20종목이 A4 한 장에 들어간다. 소개는 회색, 배경은 진한 색으로 두어
     글자색이 구분자 역할을 한다(구분 기호를 넣지 않아 줄바꿈 낭비도 없다).
+
+    행 높이는 MERGED_MAX_LINES 줄로 고정한다. 내용 길이에 따라 행이 들쭉날쭉하면
+    표가 흐트러져 보이므로, 짧은 행도 같은 높이를 차지하게 min-height 를 준다.
+    (height + overflow:hidden 이 아니라 min-height 인 이유: 캡을 넘긴 내용이
+     조용히 잘려 사라지는 것보다 행이 늘어나 눈에 보이는 편이 낫다. 캡이
+     제대로 걸려 있으면 늘어나는 일은 없다 — 모듈 상단 예산 assert 참고.)
+
+    종목코드·종목명·등락률은 세로 중앙에 둔다. 고정 높이 행에서 위로 붙으면
+    두 줄짜리 배경 옆에서 어긋나 보인다.
     """
     up = kind == 'up'
     accent = '#16a34a' if up else '#dc2626'
@@ -811,40 +884,46 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
     # 종목코드는 최장이 중국의 '688825.SS'(9자, 6.4pt 모노 ≈ 39px) 이므로 7% 로 충분.
     widths = ['7%', '19%', '7%', '67%']
 
+    # thead 에 아래 경계를 준다. border-collapse 는 맞닿은 경계를 반씩 나누므로,
+    # 헤더에 경계가 없으면 첫 행만 위쪽 0.5px 을 못 받아 다른 행보다 0.5px 낮아진다
+    # (실측 31.63px vs 32.13px). 색은 헤더 배경과 같게 두어 보이지 않는다.
     ths = ''.join(
         f'<th style="width:{w};background:#334155;color:#ffffff;font-size:6.6pt;'
-        f'font-weight:700;padding:2.5px 4px;text-align:center;border:0">{E(h)}</th>'
+        f'font-weight:700;padding:2.5px 4px;text-align:center;border:0;'
+        f'border-bottom:1px solid #334155">{E(h)}</th>'
         for h, w in zip(head, widths))
+
+    # 합친 칸 고정 높이 = MERGED_MAX_LINES 줄. line-height 가 1.42 이므로 em 단위로
+    # 정확히 떨어진다(2줄 = 2.84em).
+    cell_h = f'{MERGED_MAX_LINES * 1.42:.2f}em'
 
     trs = []
     for i, r in enumerate(rows):
         bg = '#f8fafc' if i % 2 else '#ffffff'
-        note = ''
-        if r.get('source_url'):
-            footnotes.append((clean_name(r['name']), r['source_url'], r.get('source_date', '')))
-            note = (f'<sup style="color:#2563eb;font-weight:700;font-size:5.4pt">'
-                    f'[{len(footnotes)}]</sup>')
         dim = 'color:#64748b;font-style:italic;' if r.get('confidence') == 'low' else ''
         td = ('padding:2.5px 4px;border-bottom:1px solid #e2e8f0;font-size:6.9pt;'
-              f'vertical-align:top;background:{bg};')
+              f'background:{bg};')
+        mid = td + 'vertical-align:middle;'
         profile = clip(r.get('profile', ''), PROFILE_CLIP)
         reason  = clip(r.get('reason', ''), REASON_CLIP)
         prof_html = (f'<span style="color:#8592a3">{E(profile)}</span> '
                      if profile else '')
         trs.append(
             '<tr>'
-            f'<td style="{td}text-align:center;font-family:Consolas,monospace;font-size:6.4pt;'
+            f'<td style="{mid}text-align:center;font-family:Consolas,monospace;font-size:6.4pt;'
             f'color:#475569">{E(str(r["code"]))}</td>'
-            f'<td style="{td}font-weight:700;color:#1e293b">{E(clean_name(r["name"]))}</td>'
-            f'<td style="{td}text-align:right;font-weight:800;color:{accent};white-space:nowrap">'
+            f'<td style="{mid}font-weight:700;color:#1e293b;line-height:1.3">'
+            f'{E(clean_name(r["name"]))}</td>'
+            f'<td style="{mid}text-align:right;font-weight:800;color:{accent};white-space:nowrap">'
             f'{fmt_ret(r["ret"])}</td>'
             # overflow-wrap:anywhere — 긴 영문 토큰(티커·제품명)이 줄 앞에서
             # 통째로 넘어가면 2줄 예산이 3줄로 튄다. 어디서든 끊게 둔다.
-            f'<td style="{td}line-height:1.42;overflow-wrap:anywhere">'
+            f'<td style="{td}vertical-align:top">'
+            f'<div style="min-height:{cell_h};line-height:1.42;overflow-wrap:anywhere">'
             f'{prof_html}'
             f'<span style="{dim}">'
             f'{render_reason_prefix(r.get("confidence", ""))}'
-            f'{E(reason)}{note}</span></td>'
+            f'{E(reason)}</span></div></td>'
             '</tr>')
 
     return (
@@ -855,44 +934,24 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
     )
 
 
-def _domain(url):
-    m = re.match(r'https?://([^/]+)', str(url or ''))
-    return (m.group(1) if m else str(url or '')).replace('www.', '')[:22]
-
-
-def render_footnotes(footnotes):
-    """출처를 한 줄씩이 아니라 흘러가는 인라인 목록으로 찍는다.
-
-    종이에 URL 전문을 싣는 건 쓸모가 없는데 자리는 크게 먹는다(20건이면 A4
-    세로 예산의 50mm). 번호·종목명·도메인만 남기고 전체 URL 은 링크와 title
-    속성으로 보존한다 — 화면에서는 클릭·호버로 그대로 확인된다.
-    """
-    if not footnotes:
-        return ''
-    # ★ 항목 사이는 공백으로 이어야 한다. 붙여 쓰면 인라인 박스 사이에 줄바꿈
-    #   기회가 없어(각 항목은 내부가 nowrap) 한 줄에 다 밀렸다가 잘린다.
-    items = ' '.join(
-        '<span style="white-space:nowrap;margin-right:10px">'
-        f'<b style="color:#2563eb">[{i}]</b> {E(str(name)[:12])} '
-        f'<a href="{E(str(url))}" title="{E(str(url))}" target="_blank" '
-        f'style="color:#94a3b8;text-decoration:none">{E(_domain(url))}</a>'
-        + (f' <span style="color:#cbd5e1">{E(str(date)[5:])}</span>' if date else '')
-        + '</span>'
-        for i, (name, url, date) in enumerate(footnotes, 1))
-    return ('<div style="border-top:1px solid #e2e8f0;padding-top:4px;margin-top:4px;'
-            'font-size:5.4pt;color:#94a3b8;line-height:1.75">'
-            '<span style="font-weight:700;color:#64748b;margin-right:6px">출처</span>'
-            f'{items}</div>')
+# 출처 목록은 리포트에 싣지 않는다(2026-08-06).
+#   종이에서 URL 은 클릭할 수 없어 쓸모가 없는데 자리는 크게 먹었다(20건이면
+#   A4 세로 예산의 90px). 그 자리를 시황 코멘트와 등락 배경 분량으로 돌렸다.
+#   source_url / source_date 는 계속 수집한다 — 근거를 찾았는지 확인하는
+#   장치이고, confidence 판정과 실행 로그의 '✓' 표시가 여기에 걸려 있다.
 
 
 def render_html(market, date, idx_data, overview, top, bot):
     market_name = MARKET_NAME.get(market, market)
     code_header = 'code' if market == 'kr' else 'ticker'
-    footnotes = []
-    tbl_up   = render_table(top, 'up', footnotes, code_header)
-    tbl_down = render_table(bot, 'down', footnotes, code_header)
+    tbl_up   = render_table(top, 'up', code_header)
+    tbl_down = render_table(bot, 'down', code_header)
 
-    ov = ''.join(f'<div style="margin-bottom:1px">• {E(line)}</div>' for line in overview)
+    ov = ''.join(
+        '<div style="display:flex;gap:4px;margin-bottom:2px">'
+        '<span style="color:#94a3b8;flex-shrink:0">•</span>'
+        f'<span>{E(line)}</span></div>'
+        for line in overview)
 
     rows_all = top + bot
     total = len(rows_all)
@@ -946,13 +1005,12 @@ def render_html(market, date, idx_data, overview, top, bot):
   {head_block}
   <div style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;margin-bottom:7px">
     {render_idx_cards(market, idx_data)}
-    <div style="background:#f8fafc;border-radius:5px;padding:5px 7px;font-size:7pt;
-                line-height:1.5;color:#334155">{ov}</div>
+    <div style="background:#f8fafc;border-radius:5px;padding:6px 8px;font-size:7pt;
+                line-height:1.48;color:#334155">{ov}</div>
   </div>
   {tbl_up}
   {tbl_down}
   <div style="display:flex;justify-content:flex-end">{quality}</div>
-  {render_footnotes(footnotes)}
 </div>
 </body></html>"""
 
@@ -987,7 +1045,8 @@ def self_test(out_path):
         top.append({
             'code': f'00593{i}', 'name': f'테스트종목{i}', 'ret': 0.12 - i * 0.008,
             'ret5': 0.2, 'mcap': 5e12, 'cur': 'KRW',
-            'profile': '메모리 반도체와 파운드리를 생산해 글로벌 IT 제조사에 공급하는 종합 반도체 기업이다.',
+            # 명사형 종결(서술어·마침표 없음)이 현재 규격이다
+            'profile': '메모리 반도체를 설계·생산해 글로벌 IT 제조사에 공급',
             'reason': long_reason if indiv else no_news,
             'catalyst_type': ['실적', '섹터·테마', '확인된_뉴스_없음'][i % 3],
             # i%3==1 → 반도체 섹터 공통(축약 대상 4종목), i%3==2 → 섹터 미확인(원문 유지)
@@ -1015,11 +1074,16 @@ def self_test(out_path):
     assert all(r.get('sector_role') is None for r in top if r['has_individual_issue']), \
         '개별 재료 종목이 축약됨'
 
-    doc = render_html('kr', '2026-07-28', idx_data,
-                      ['반도체 업종이 규제 완화 소식에 동반 반등하며 지수 상승을 이끌었다.',
-                       '중소형 개별주는 뚜렷한 재료 없이 수급으로 움직인 사례가 다수였다.',
-                       '실적이 확인된 종목과 미확인 종목의 수익률 격차가 벌어지는 국면이다.'],
-                      top, bot)
+    overview = [
+        '반도체가 오늘 지수를 끌어올린 유일한 축으로, 상승 10종목 중 6개가 이 업종이다.',
+        '미 상무부가 대중 장비 수출 규제를 완화하며 장비 발주 재개 기대가 살아난 결과다.',
+        '장비·소재는 동반 강세였지만 중국 매출 비중이 낮은 후공정은 상승에서 빠졌다.',
+        '지수는 0.84% 올랐는데 코스닥은 밀려, 대형주로만 자금이 몰린 하루였다.',
+        '실적이 확인된 종목이 평균 8%대, 재료 미확인 종목은 3%대로 격차가 벌어졌다.',
+        '규제 완화가 실제 발주로 이어지는지 3분기 장비 수주 공시를 확인해야 한다.',
+    ]
+    assert len(overview) == OVERVIEW_LINES, '샘플 총평 줄 수가 설정과 다르다'
+    doc = render_html('kr', '2026-07-28', idx_data, overview, top, bot)
     doc = inject_timestamp(doc, '2026-07-28 16:30')
 
     assert doc.startswith('<!DOCTYPE html>'), 'DOCTYPE 누락'
@@ -1035,7 +1099,29 @@ def self_test(out_path):
     assert '회사 개요 · 등락 배경' in doc, '합친 열 제목 누락'
     assert '>회사 소개<' not in doc, '회사 소개 열이 아직 분리돼 있음'
     assert doc.count('▲ 상승 TOP 10') == 1 and doc.count('▼ 하락 TOP 10') == 1, '표 제목 이상'
-    assert doc.count('<sup') == 8, f'각주 개수 이상: {doc.count("<sup")}'
+
+    # ── 출처는 리포트에 싣지 않는다 ────────────────────────────────────────────
+    assert doc.count('<sup') == 0, '각주 첨자가 남아 있음'
+    assert '>출처<' not in doc and 'example.com' not in doc, '출처 목록이 남아 있음'
+    assert 'render_footnotes' not in globals(), 'render_footnotes 가 아직 살아 있음'
+
+    # ── 행 높이 균일 + 앞 3열 세로 중앙 ────────────────────────────────────────
+    # 합친 칸에 고정 높이 컨테이너가 들어가야 짧은 행도 같은 높이를 차지한다
+    assert doc.count(f'min-height:{MERGED_MAX_LINES * 1.42:.2f}em') == 20, \
+        '합친 칸 고정 높이 컨테이너가 20행에 안 붙었다'
+    # 종목코드/종목명/등락률 = 3열 x 20행
+    assert doc.count('vertical-align:middle') == 60, \
+        f'세로 중앙 정렬 칸 수 이상: {doc.count("vertical-align:middle")}'
+    # 합친 칸만 위 정렬 (20행)
+    assert doc.count('vertical-align:top') == 20, \
+        f'합친 칸 위 정렬 수 이상: {doc.count("vertical-align:top")}'
+    # thead 아래 경계 — 없으면 첫 행이 다른 행보다 0.5px 낮아진다
+    assert doc.count('border-bottom:1px solid #334155') == 8, \
+        'thead 아래 경계 누락 — 첫 행 높이가 어긋난다'
+
+    # ── 총평 ──────────────────────────────────────────────────────────────────
+    for line in overview:
+        assert line in doc, f'총평 줄 누락: {line[:20]}'
     # 사유 분류·업종 딱지가 렌더링되지 않아야 한다.
     # (총평 산문에 '실적' 같은 단어가 정상적으로 등장하므로 단어가 아니라
     #  딱지 마크업 자체를 검사한다)
@@ -1058,7 +1144,7 @@ def self_test(out_path):
         [{'code': 'X', 'name': '<script>alert(1)</script>', 'ret': 0.1,
           'profile': '<b>x</b>', 'reason': '<img onerror=1>',
           'catalyst_type': '실적', 'confidence': 'high', 'source_url': ''}],
-        'up', [], 'code'), 'HTML 이스케이프 실패'
+        'up', 'code'), 'HTML 이스케이프 실패'
 
     # ── clip(): 렌더 단계 하드 캡 ──────────────────────────────────────────────
     assert clip('짧다', 20) == '짧다', '짧은 문장이 변형됨'
@@ -1093,10 +1179,18 @@ def self_test(out_path):
         [{'code': 'Z', 'name': '초과종목', 'ret': 0.05,
           'profile': '나' * 300, 'reason': '다' * 300,
           'catalyst_type': '실적', 'confidence': 'high', 'source_url': ''}],
-        'up', [], 'code')
+        'up', 'code')
     assert '나' * (PROFILE_CLIP + 1) not in over, '회사 소개가 캡을 넘겨 렌더됨'
     assert '다' * (REASON_CLIP + 1) not in over, '등락 배경이 캡을 넘겨 렌더됨'
     assert over.count('…') == 2, f'생략 표시 개수 이상: {over.count("…")}'
+
+    # ── _profile_is_current(): 옛 캐시 무효화 ──────────────────────────────────
+    assert _profile_is_current('메모리 반도체를 설계·생산해 글로벌 IT 제조사에 공급')
+    assert _profile_is_current('온라인 쇼핑몰 구축·결제 플랫폼을 전세계 판매자에 제공')
+    assert not _profile_is_current('메모리 반도체를 생산해 IT 제조사에 공급한다'), '서술형이 통과됨'
+    assert not _profile_is_current('반도체를 만드는 기업이다.'), '마침표·서술형이 통과됨'
+    assert not _profile_is_current('가' * (PROFILE_CLIP + 1)), '긴 소개가 통과됨'
+    assert not _profile_is_current(''), '빈 소개가 통과됨'
 
     # ── 리서치 실패 종목 표기 ──────────────────────────────────────────────────
     failed_rows = [dict(top[0], research_failed=True,
@@ -1105,13 +1199,6 @@ def self_test(out_path):
     assert '확인 실패 1건' in docf, '리서치 실패 건수가 품질 요약에 안 보임'
     assert '리서치 실패 — 데이터를 가져오지 못했습니다' not in docf, '옛 실패 문구가 남아 있음'
     assert '확인 실패' not in doc, '실패가 없는데 실패 건수가 표기됨'
-
-    # ── 출처 목록은 여러 줄로 흘러야 한다 ─────────────────────────────────────
-    # 항목 사이에 공백이 없으면 줄바꿈 기회가 사라져 한 줄에 밀렸다가 잘린다.
-    fn = render_footnotes([(f'종목{i}', f'https://ex{i}.com/a/b', '2026-08-05')
-                           for i in range(20)])
-    assert '</span> <span' in fn, '출처 항목 사이 공백 누락 — 한 줄에 밀려 잘린다'
-    assert fn.count('<span style="white-space:nowrap') == 20, '출처 항목 누락'
 
     # ── 가변 종목 수: 상승 3개 / 하락 0개 ──────────────────────────────────────
     doc2 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 상승했다.'], top[:3], [])
@@ -1136,8 +1223,9 @@ def self_test(out_path):
 
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(doc)
-    print(f'[self-test] OK — {len(doc):,} bytes, A4 1장, 각주 {doc.count("<sup")}건, '
-          f'섹터축약 상승 {c_up}건/하락 {c_down}건 → {out_path}')
+    print(f'[self-test] OK — {len(doc):,} bytes, A4 1장, 총평 {OVERVIEW_LINES}줄, '
+          f'행 높이 {MERGED_MAX_LINES}줄 고정, 섹터축약 상승 {c_up}건/하락 {c_down}건 '
+          f'→ {out_path}')
     print('  ※ 실제 1페이지 여부는 브라우저 인쇄 높이로 확인해야 한다 '
           '(자리 예산: 190 x 277mm).')
     return doc
