@@ -56,19 +56,56 @@ PAUSE_RESUME_MAX    = 8    # 웹검색 pause_turn 재개 한도
 # 회사 소개와 등락 배경을 표의 같은 칸에 이어 쓴다. 두 열로 나누면 둘 중 긴 쪽이
 # 행 높이를 정해 짧은 쪽 자리가 통째로 버려지는데, 한 칸에 흘려 쓰면 그 낭비가 없다.
 #
-# 캡은 브라우저 실측으로 잡았다(2026-08-06, 합친 칸 폭 473px, 6.9pt):
-#   한글 한 글자 8.46px → 한 줄 55자, 두 줄 110자.
-#   106자는 2줄, 146자는 3줄로 넘어갔다. 3줄이 되면 20행 x 13px = 260px 가
-#   늘어 A4 한 장을 넘긴다(스트레스 테스트에서 190px 초과 확인).
-#   → 각주 첨자 폭까지 감안해 합계 105자 안쪽으로 묶는다: 40 + 공백 + 60 = 101자.
+# 캡은 브라우저 실측으로 잡았다(2026-08-06). 합친 칸 내부폭 473px, 6.9pt,
+# 한글 한 글자 8.46px → 한 줄 55자, 두 줄 110자. 3줄이 되면 20행 x 13px = 260px
+# 가 늘어 A4 한 장을 넘긴다(스트레스 테스트에서 실제로 초과했다).
+#
+# ★ 이 칸에 들어가는 건 소개+배경만이 아니다. 아래를 모두 더해야 한다:
+#     회사 소개        PROFILE_CLIP
+#     공백             1
+#     '추정 ' 접두어    약 3.1  (신뢰도 low 인 행만)
+#     등락 배경        REASON_CLIP
+#     각주 첨자        약 1.3  ('[20]' 을 5.4pt 로 찍은 폭)
+#   처음엔 뒤 두 항목을 빼먹고 40+60 이면 된다고 봤는데 합계가 109자가 되어
+#   3줄로 넘어갔다. 38+1+3.1+58+1.3 = 101.4자 → 110자 예산 안에 9자 여유.
 PROFILE_MIN_CHARS = 26     # 회사 소개 목표 하한(프롬프트용)
-PROFILE_MAX_CHARS = 36     # 회사 소개 목표 상한(프롬프트용)
-REASON_MIN_CHARS  = 42     # 등락 배경 목표 하한(프롬프트용)
-REASON_MAX_CHARS  = 56     # 등락 배경 목표 상한(프롬프트용)
+PROFILE_MAX_CHARS = 34     # 회사 소개 목표 상한(프롬프트용)
+REASON_MIN_CHARS  = 40     # 등락 배경 목표 하한(프롬프트용)
+REASON_MAX_CHARS  = 54     # 등락 배경 목표 상한(프롬프트용)
 # 렌더 단계 하드 캡 — 프롬프트 한도를 모델이 넘겨도 2줄이 유지되게 한다.
 # 프롬프트 한도보다 여유를 두었으므로 평소에는 걸리지 않는다.
-PROFILE_CLIP = 40
-REASON_CLIP  = 60
+PROFILE_CLIP = 38
+REASON_CLIP  = 58
+NAME_CLIP    = 40          # 종목명 열 하드 캡 (아래 NAME_NOISE 로 꼬리표를 떼고 나서)
+
+# 위 회계를 코드로 못박는다. 캡을 올리다 예산을 넘기면 import 단계에서 바로 터진다
+# — 조용히 3줄이 되어 A4 두 장으로 새는 것보다 낫다.
+MERGED_LINE_CHARS  = 55    # 실측: 합친 칸 내부폭 473px / 한글 8.46px
+MERGED_MAX_LINES   = 2
+_MERGED_OVERHEAD   = 1 + 3.1 + 1.3        # 공백 + '추정 ' + 각주 첨자
+_MERGED_BUDGET     = MERGED_LINE_CHARS * MERGED_MAX_LINES
+_MERGED_USED       = PROFILE_CLIP + REASON_CLIP + _MERGED_OVERHEAD
+assert _MERGED_USED <= _MERGED_BUDGET, (
+    f'합친 칸 예산 초과: {_MERGED_USED:.1f}자 > {_MERGED_BUDGET}자. '
+    f'PROFILE_CLIP({PROFILE_CLIP}) 또는 REASON_CLIP({REASON_CLIP}) 를 줄이거나, '
+    f'render_table() 의 열 폭을 넓히고 MERGED_LINE_CHARS 를 실측으로 다시 잡아라.')
+
+# 미국 종목명은 Nasdaq 원문이라 주식 종류 꼬리표가 길게 붙는다.
+# 표에서는 정보가 없는데 종목명 열을 4~5줄로 밀어 행 높이를 지배해 버린다.
+#   실측(2026-08-06 미국편): 'Space Exploration Technologies Corp. Class A Common
+#   Stock' 57자 → 행 62px. 합친 칸은 2줄(32px)이면 되는데도 행이 4~5줄이 됐고,
+#   그렇게 12행이 겹쳐 A4 한 장을 147px 넘겼다.
+# 꼬리표를 떼면 'Space Exploration Technologies Corp.' 이 남는다.
+# '(NEW)' 는 이름 중간에도 오므로 \b 로는 잡히지 않는다(괄호 앞뒤가 모두 비단어라
+# 단어 경계가 성립하지 않음). 별도 대안으로 두고 위치와 무관하게 지운다.
+NAME_NOISE = re.compile(
+    r'\s*\((?:NEW|OLD)\)'
+    r'|\s*\b(?:'
+    r'Class\s+[A-Z]\b.*'
+    r'|(?:American|Global)\s+Depositary\s+(?:Shares?|Receipts?).*'
+    r'|(?:Common|Ordinary|Registered|Subordinate\s+Voting)\s+(?:Stock|Shares?).*'
+    r'|Depositary\s+Shares?.*'
+    r')$', re.I)
 
 # 리서치 성공률이 이 아래면 게시하지 않고 실패로 끝낸다.
 # 반쪽짜리 리포트를 올려두면 멱등 가드가 그날의 재시도를 막아버려서,
@@ -328,7 +365,7 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
 5. ★ reason 분량 — 리포트가 A4 한 장이므로 분량이 곧 지면이다. 짧게 써라.
    • 개별 재료가 뚜렷하면(has_individual_issue=true): {REASON_MIN_CHARS}~{REASON_MAX_CHARS}자.
      숫자(실적 수치, 계약 규모, 목표주가 등)를 확인했다면 그 숫자를 우선 넣어라.
-   • 섹터 이슈로 설명되는 경우(has_individual_issue=false): 25~40자로 더 짧게.
+   • 섹터 이슈로 설명되는 경우(has_individual_issue=false): 22~36자로 더 짧게.
      섹터 공통 원인만 쓰고 개별 종목 서술을 늘리지 마라.
    {REASON_CLIP}자를 넘기면 뒤가 잘린다. 형용사·배경설명·전망은 버리고 원인 사실만 남겨라.
    한 문장이면 한 문장으로 끝내라. 도입부("~에 따르면", "시장에서는")를 쓰지 마라.
@@ -567,7 +604,7 @@ def collapse_sector_duplicates(rows):
         lead['reason'] = f"{sector} 섹터 공통 이슈 — {lead['sector_issue']}"
         lead['sector_role'] = 'lead'
         for m in members[1:]:
-            m['reason'] = f"{sector} 섹터 동일 이슈 영향 ({lead['name']}과 동일)"
+            m['reason'] = f"{sector} 섹터 동일 이슈 영향 ({clean_name(lead['name'])}과 동일)"
             m['sector_role'] = 'dup'
             m['source_url'] = ''            # 같은 출처를 각주로 중복 표기하지 않는다
             collapsed += 1
@@ -686,6 +723,16 @@ def clip(text, limit):
     return cut.rstrip(' ,·') + '…'
 
 
+def clean_name(name):
+    """종목명에서 주식 종류 꼬리표를 떼고 길이를 캡한다.
+
+    표에 필요한 건 회사 이름이다. 'Class A Common Stock' 류는 정보를 주지 않고
+    종목명 열만 4~5줄로 밀어 행 높이를 지배한다(NAME_NOISE 주석 참고).
+    """
+    t = NAME_NOISE.sub('', str(name or '').strip()).strip(' ,.')
+    return clip(t or str(name or ''), NAME_CLIP)
+
+
 def render_idx_cards(market, idx_data):
     if not idx_data:
         return '<div style="font-size:8pt;color:#94a3b8;margin-bottom:8px">지수 데이터 없음</div>'
@@ -760,7 +807,9 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
 
     head = ['종목코드' if code_header == 'code' else 'Ticker', '종목명', '등락률',
             '회사 개요 · 등락 배경']
-    widths = ['9%', '15%', '7%', '69%']
+    # 종목명 열이 좁으면 영문 회사명이 여러 줄로 벌어져 행 높이를 지배한다.
+    # 종목코드는 최장이 중국의 '688825.SS'(9자, 6.4pt 모노 ≈ 39px) 이므로 7% 로 충분.
+    widths = ['7%', '19%', '7%', '67%']
 
     ths = ''.join(
         f'<th style="width:{w};background:#334155;color:#ffffff;font-size:6.6pt;'
@@ -772,7 +821,7 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
         bg = '#f8fafc' if i % 2 else '#ffffff'
         note = ''
         if r.get('source_url'):
-            footnotes.append((r['name'], r['source_url'], r.get('source_date', '')))
+            footnotes.append((clean_name(r['name']), r['source_url'], r.get('source_date', '')))
             note = (f'<sup style="color:#2563eb;font-weight:700;font-size:5.4pt">'
                     f'[{len(footnotes)}]</sup>')
         dim = 'color:#64748b;font-style:italic;' if r.get('confidence') == 'low' else ''
@@ -786,7 +835,7 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
             '<tr>'
             f'<td style="{td}text-align:center;font-family:Consolas,monospace;font-size:6.4pt;'
             f'color:#475569">{E(str(r["code"]))}</td>'
-            f'<td style="{td}font-weight:700;color:#1e293b">{E(str(r["name"]))}</td>'
+            f'<td style="{td}font-weight:700;color:#1e293b">{E(clean_name(r["name"]))}</td>'
             f'<td style="{td}text-align:right;font-weight:800;color:{accent};white-space:nowrap">'
             f'{fmt_ret(r["ret"])}</td>'
             # overflow-wrap:anywhere — 긴 영문 토큰(티커·제품명)이 줄 앞에서
@@ -1020,6 +1069,24 @@ def self_test(out_path):
     spaced = '앞부분 문장입니다 ' * 20
     c = clip(spaced, 50)
     assert len(c) <= 51 and c.endswith('…') and not c.endswith(' …'), f'공백 절단 이상: {c!r}'
+
+    # ── clean_name(): 미국 종목명 꼬리표 제거 ──────────────────────────────────
+    # 실제 Nasdaq 원문(2026-08-06 미국편에서 뽑음)
+    for raw, want in [
+        ('Space Exploration Technologies Corp. Class A Common Stock',
+         'Space Exploration Technologies Corp'),
+        ('Advanced Micro Devices Inc. Common Stock', 'Advanced Micro Devices Inc'),
+        ('Shopify Inc. Class A Subordinate Voting Shares', 'Shopify Inc'),
+        ('Gold Fields Limited American Depositary Shares', 'Gold Fields Limited'),
+        ('United Microelectronics Corporation (NEW) Common Stock',
+         'United Microelectronics Corporation'),
+        ('Thomson Reuters Corporation Common Shares', 'Thomson Reuters Corporation'),
+        ('삼성전자', '삼성전자'),                    # 한글명은 건드리지 않는다
+        ('CXMT CORPORATION', 'CXMT CORPORATION'),
+    ]:
+        got = clean_name(raw)
+        assert got == want, f'clean_name({raw!r}) -> {got!r}, 기대 {want!r}'
+    assert len(clean_name('X' * 80)) == NAME_CLIP + 1, '종목명 하드 캡 미적용'
 
     # 프롬프트 한도를 넘긴 입력도 렌더에서 잘려야 한다
     over = render_table(
