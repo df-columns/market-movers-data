@@ -21,7 +21,7 @@
 # 사용법: python generate_review.py --market kr    (또는 us / jp / cn)
 #         python generate_review.py --self-test    (오프라인 렌더링 검증)
 
-import os, sys, re, json, html, argparse
+import os, sys, re, json, html, argparse, random, time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
@@ -39,10 +39,42 @@ CLAUDE_MODEL = 'claude-opus-5'
 KST = timezone(timedelta(hours=9))
 
 RESEARCH_WORKERS  = 6      # 종목 리서치 동시 실행 수
-SEARCH_MAX_USES   = 8      # 종목당 웹검색 최대 횟수
+SEARCH_MAX_USES   = 6      # 종목당 웹검색 최대 횟수
 PROFILE_TTL_DAYS  = 180    # 회사 소개 캐시 유효기간
-REASON_MIN_CHARS  = 150    # 등락 배경 목표 길이 하한(프롬프트용)
-REASON_MAX_CHARS  = 260    # 등락 배경 목표 길이 상한(프롬프트용, 인쇄 분량과 트레이드오프)
+
+# ── 토큰 예산 ──────────────────────────────────────────────────────────────────
+# max_tokens 는 '응답 텍스트'만이 아니라 adaptive thinking 까지 합친 상한이다.
+# 예전 값 8000 은 웹검색 6~8회 + thinking 이 들어가면 그대로 소진돼 JSON 이
+# 중간에서 잘렸고, 재시도 3번이 모두 같은 8000 을 써서 세 번 다 잘렸다.
+# 실측(2026-08-06 게시본): 중국 18/20, 국내 6/20, 일본 5/20 종목이 이걸로 실패.
+# 스트리밍으로 호출하므로 값을 키워도 HTTP 타임아웃 위험은 없다.
+RESEARCH_MAX_TOKENS = 32000
+RESEARCH_RETRIES    = 3    # 일시적 오류(429/5xx/네트워크) 재시도 횟수
+PAUSE_RESUME_MAX    = 8    # 웹검색 pause_turn 재개 한도
+
+# ── 분량 (1페이지 리포트) ──────────────────────────────────────────────────────
+# 회사 소개와 등락 배경을 표의 같은 칸에 이어 쓴다. 두 열로 나누면 둘 중 긴 쪽이
+# 행 높이를 정해 짧은 쪽 자리가 통째로 버려지는데, 한 칸에 흘려 쓰면 그 낭비가 없다.
+#
+# 캡은 브라우저 실측으로 잡았다(2026-08-06, 합친 칸 폭 473px, 6.9pt):
+#   한글 한 글자 8.46px → 한 줄 55자, 두 줄 110자.
+#   106자는 2줄, 146자는 3줄로 넘어갔다. 3줄이 되면 20행 x 13px = 260px 가
+#   늘어 A4 한 장을 넘긴다(스트레스 테스트에서 190px 초과 확인).
+#   → 각주 첨자 폭까지 감안해 합계 105자 안쪽으로 묶는다: 40 + 공백 + 60 = 101자.
+PROFILE_MIN_CHARS = 26     # 회사 소개 목표 하한(프롬프트용)
+PROFILE_MAX_CHARS = 36     # 회사 소개 목표 상한(프롬프트용)
+REASON_MIN_CHARS  = 42     # 등락 배경 목표 하한(프롬프트용)
+REASON_MAX_CHARS  = 56     # 등락 배경 목표 상한(프롬프트용)
+# 렌더 단계 하드 캡 — 프롬프트 한도를 모델이 넘겨도 2줄이 유지되게 한다.
+# 프롬프트 한도보다 여유를 두었으므로 평소에는 걸리지 않는다.
+PROFILE_CLIP = 40
+REASON_CLIP  = 60
+
+# 리서치 성공률이 이 아래면 게시하지 않고 실패로 끝낸다.
+# 반쪽짜리 리포트를 올려두면 멱등 가드가 그날의 재시도를 막아버려서,
+# 빈칸이 가득한 리포트가 하루 종일 그대로 남는다(실제로 그랬다).
+# 게시를 안 하면 30분 뒤 백업 cron 이 같은 기준일로 다시 시도한다.
+PUBLISH_MIN_OK_RATIO = 0.7
 
 # HTML의 시장별 지수 순서와 동일
 IDX_ORDER = {
@@ -240,7 +272,10 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
         if stock.get('ret5') is not None else "5거래일 누적 데이터 없음"
     )
     profile_rule = (
-        "- profile: 이 회사의 핵심 사업을 한 문장(60~90자)으로. 무엇을 만들어 어디에 파는지 구체적으로."
+        f"- profile: 이 회사의 핵심 사업을 한 문장({PROFILE_MIN_CHARS}~{PROFILE_MAX_CHARS}자)으로.\n"
+        "  무엇을 만들어 어디에 파는지만. 설립연도·지역·계열 관계·수사는 넣지 마라.\n"
+        "  예: \"메모리 반도체를 설계·생산해 글로벌 IT 제조사에 공급한다.\"\n"
+        f"  ※ 리포트에서 이 문장 바로 뒤에 reason 이 이어 붙는다. {PROFILE_MAX_CHARS}자를 넘기면 잘린다."
         if need_profile else
         '- profile: 빈 문자열("")로 두어라. 이미 확보돼 있다.'
     )
@@ -290,17 +325,21 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
 4. 지수가 이 종목과 같은 방향으로 크게 움직였고 초과수익이 작다면,
    개별 재료로 포장하지 말고 "지수·매크로"로 분류하라.
    (분류값은 내부 집계용이며 리포트에 표기되지 않는다. reason에도 쓰지 마라.)
-5. reason 분량 — 근거 수준에 맞춰라.
+5. ★ reason 분량 — 리포트가 A4 한 장이므로 분량이 곧 지면이다. 짧게 써라.
    • 개별 재료가 뚜렷하면(has_individual_issue=true): {REASON_MIN_CHARS}~{REASON_MAX_CHARS}자.
-     숫자(실적 수치, 계약 규모, 목표주가 등)를 확인했다면 반드시 포함하라.
-   • 섹터 이슈로 설명되는 경우(has_individual_issue=false): 100~160자로 짧게.
+     숫자(실적 수치, 계약 규모, 목표주가 등)를 확인했다면 그 숫자를 우선 넣어라.
+   • 섹터 이슈로 설명되는 경우(has_individual_issue=false): 25~40자로 더 짧게.
      섹터 공통 원인만 쓰고 개별 종목 서술을 늘리지 마라.
-   형용사보다 사실을 써라.
+   {REASON_CLIP}자를 넘기면 뒤가 잘린다. 형용사·배경설명·전망은 버리고 원인 사실만 남겨라.
+   한 문장이면 한 문장으로 끝내라. 도입부("~에 따르면", "시장에서는")를 쓰지 마라.
+   좋은 예: "3분기 영업이익 4.2조원으로 컨센서스 18% 상회. HBM3E 엔비디아 퀄 통과."
+   나쁜 예: "시장에서는 3분기 실적이 예상을 상회한 것으로 알려지면서 투자자들의
+             관심이 집중되는 모습을 보였고, 이에 따라 매수세가 유입된 것으로 보인다."
 6. sector — 이 종목의 업종을 짧은 명사로. 예: 반도체, 2차전지, 조선, 바이오, 방산, 증권, 자동차.
    다른 종목과 묶이도록 일반적으로 통용되는 업종명을 쓰고, 회사 고유 표현은 쓰지 마라.
 7. has_individual_issue — 이 종목만의 뚜렷한 개별 재료(실적·공시·수주 등)가 확인되면 true,
    섹터/매크로/수급으로만 설명되면 false.
-8. sector_issue — 오늘 이 업종을 움직인 공통 원인을 한 문장(40~70자)으로.
+8. sector_issue — 오늘 이 업종을 움직인 공통 원인을 한 문장(20~32자)으로.
    업종 차원의 원인을 확인하지 못했으면 빈 문자열("").
    ※ 이 값은 같은 업종 종목이 여러 개일 때 코멘트를 한 줄로 묶는 데 쓰인다.
 9. source_url은 실제로 검색 결과에서 확인한 기사·공시 URL. 없으면 빈 문자열("").
@@ -346,60 +385,108 @@ def _extract_json(text):
 
 
 def _stream_final(client, **kwargs):
-    """스트리밍 + pause_turn 재개 루프 (웹검색은 서버측 루프에서 일시정지될 수 있음)"""
+    """스트리밍 + pause_turn 재개 루프.
+
+    웹검색은 서버측 루프에서 일시정지될 수 있다(stop_reason='pause_turn').
+    문서가 정한 재개 방법대로 어시스턴트 응답을 그대로 붙여 다시 요청한다.
+    재개 한도를 넘기면 stop_reason 이 'pause_turn' 인 응답이 그대로 돌아온다.
+    호출자가 stop_reason 을 반드시 봐야 한다(예전 코드는 안 봐서, 끝나지 않은
+    턴의 빈 텍스트를 'JSON 파싱 실패'로만 기록했다).
+    """
     messages = list(kwargs.pop('messages'))
     final = None
-    for _ in range(6):
+    for _ in range(PAUSE_RESUME_MAX):
         with client.messages.stream(messages=messages, **kwargs) as stream:
             final = stream.get_final_message()
-        if final.stop_reason == 'pause_turn':
-            messages = messages + [{'role': 'assistant', 'content': final.content}]
-            continue
-        break
+        if final.stop_reason != 'pause_turn':
+            break
+        messages = messages + [{'role': 'assistant', 'content': final.content}]
     return final
 
 
-def call_research(client, prompt):
-    """구조화 출력으로 리서치 결과를 받는다.
+# 재시도할 가치가 있는 오류 — 429(rate limit), 5xx/529(overloaded), 네트워크.
+# SDK 도 자체 재시도를 하지만(max_retries), 소진 후에는 여기서 백오프로 더 버틴다.
+TRANSIENT_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+)
 
-    output_config.format(구조화 출력)을 우선 시도하고, 서버가 거부하면
-    JSON 지시문 + 수동 파싱으로 단계적으로 낮춰 재시도한다.
-    (로컬에서 실호출 검증이 불가능한 환경이라 방어적으로 작성)
+
+def _describe_stop(final, text):
+    """실패 원인을 로그에 남길 수 있게 stop_reason 을 사람 말로 바꾼다."""
+    sr = getattr(final, 'stop_reason', None)
+    if sr == 'max_tokens':
+        return (f'max_tokens({RESEARCH_MAX_TOKENS:,}) 소진 — 응답이 잘렸습니다 '
+                f'(텍스트 {len(text)}자)')
+    if sr == 'refusal':
+        cat = getattr(getattr(final, 'stop_details', None), 'category', None)
+        return f'모델이 응답을 거절했습니다 (category={cat})'
+    if sr == 'pause_turn':
+        return f'웹검색 재개 한도({PAUSE_RESUME_MAX}회) 초과 — 턴이 끝나지 않았습니다'
+    return f'JSON 파싱 실패 (stop_reason={sr}, 텍스트 {len(text)}자)'
+
+
+def _research_attempts(prompt):
+    """토큰 압박을 단계적으로 낮추는 재시도 사다리.
+
+    실패 원인 1순위는 예산 소진이었다(웹검색 결과 + thinking 이 응답 예산을
+    같이 쓴다). 그래서 재시도마다 effort 와 검색 횟수를 줄여, 앞 단계가
+    잘렸으면 뒤 단계는 더 적게 생각하고 더 적게 검색하도록 만든다.
+    예전 사다리는 세 단계가 모두 같은 예산이라 한 번 잘리면 세 번 다 잘렸다.
+    마지막 단계만 구조화 출력을 떼고 수동 JSON 파싱으로 내려간다.
     """
-    tools = [{'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': SEARCH_MAX_USES}]
-    base = dict(model=CLAUDE_MODEL, max_tokens=8000,
-                thinking={'type': 'adaptive'}, tools=tools)
+    def tools(n):
+        return [{'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': n}]
 
-    attempts = [
-        dict(base,
-             output_config={'effort': 'medium',
-                            'format': {'type': 'json_schema', 'schema': RESEARCH_SCHEMA}},
+    schema_fmt = {'type': 'json_schema', 'schema': RESEARCH_SCHEMA}
+    base = dict(model=CLAUDE_MODEL, max_tokens=RESEARCH_MAX_TOKENS,
+                thinking={'type': 'adaptive'})
+    return [
+        dict(base, tools=tools(SEARCH_MAX_USES),
+             output_config={'effort': 'medium', 'format': schema_fmt},
              messages=[{'role': 'user', 'content': prompt}]),
-        dict(base,
-             output_config={'effort': 'medium'},
-             messages=[{'role': 'user', 'content': prompt + _json_fallback_instruction()}]),
-        dict(base,
+        dict(base, tools=tools(3),
+             output_config={'effort': 'low', 'format': schema_fmt},
+             messages=[{'role': 'user', 'content': prompt}]),
+        dict(base, tools=tools(3),
+             output_config={'effort': 'low'},
              messages=[{'role': 'user', 'content': prompt + _json_fallback_instruction()}]),
     ]
 
+
+def call_research(client, prompt):
+    """리서치 결과(JSON)를 받는다. 사다리 3단계 x 일시적 오류 재시도."""
     last_err = None
-    for i, kwargs in enumerate(attempts):
-        try:
-            final = _stream_final(client, **kwargs)
-            text = ''.join(b.text for b in final.content if b.type == 'text')
-            data = _extract_json(text)
-            if data:
-                return data
-            last_err = f'JSON 파싱 실패 (응답 {len(text)}자)'
-        except anthropic.BadRequestError as e:
-            last_err = f'400: {e}'
-            if i < len(attempts) - 1:
-                print(f'    [degrade] 옵션 축소 후 재시도 — {e}')
-                continue
-            raise
-        except Exception as e:
-            last_err = f'{type(e).__name__}: {e}'
-            break
+    for i, kwargs in enumerate(_research_attempts(prompt), 1):
+        for retry in range(RESEARCH_RETRIES):
+            try:
+                final = _stream_final(client, **kwargs)
+                text = ''.join(b.text for b in final.content if b.type == 'text')
+                data = _extract_json(text)
+                if data:
+                    return data
+                # 같은 요청을 그대로 다시 보내도 같은 결과다 → 다음 단계로.
+                last_err = f'[{i}단계] ' + _describe_stop(final, text)
+                break
+            except anthropic.BadRequestError as e:
+                last_err = f'[{i}단계] 400: {e}'
+                break                       # 옵션 문제 — 옵션을 줄인 다음 단계로
+            except TRANSIENT_ERRORS as e:
+                last_err = f'[{i}단계] {type(e).__name__}: {e}'
+                if retry < RESEARCH_RETRIES - 1:
+                    wait = 2 ** retry + random.uniform(0, 1.5)
+                    print(f'    [재시도] {type(e).__name__} — {wait:.1f}s 후 '
+                          f'({retry + 2}/{RESEARCH_RETRIES})')
+                    time.sleep(wait)
+                    continue
+                break
+            except Exception as e:
+                # 예전 코드는 여기서 break 로 남은 단계를 통째로 버렸다.
+                last_err = f'[{i}단계] {type(e).__name__}: {e}'
+                break
+        print(f'    [단계 실패] {last_err}')
     raise RuntimeError(last_err or '리서치 실패')
 
 
@@ -410,14 +497,18 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
         data = call_research(client, prompt)
     except Exception as e:
         print(f'  [WARN] {stock["name"]}({stock["code"]}) 리서치 실패: {e}')
+        # 표에 찍히는 문구는 짧고 담백하게 둔다. 사유 분류는 '확인된_뉴스_없음'
+        # 이 아니라 research_failed 로 따로 센다 — 진짜로 뉴스가 없는 종목과
+        # 호출이 실패한 종목을 섞으면 게시 판단이 흐려진다.
         return {**stock,
-                'reason': '리서치 실패 — 데이터를 가져오지 못했습니다.',
+                'reason': '등락 배경을 확인하지 못했습니다.',
                 'catalyst_type': '확인된_뉴스_없음',
                 'sector': '', 'has_individual_issue': False, 'sector_issue': '',
                 'source_url': '', 'source_date': '',
                 'confidence': 'low',
                 'profile': cached_profile or '',
-                'profile_is_new': False}
+                'profile_is_new': False,
+                'research_failed': True}
 
     ctype = data.get('catalyst_type')
     if ctype not in CATALYST_ENUM:
@@ -436,6 +527,7 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
         'confidence':           conf if conf in ('high', 'medium', 'low') else 'low',
         'profile':              cached_profile or profile or '회사 정보 미확보',
         'profile_is_new':       bool(need_profile and profile),
+        'research_failed':      False,
     }
     tag = '✓' if out['source_url'] else '·'
     mark = '개별' if out['has_individual_issue'] else '섹터/매크로'
@@ -500,7 +592,10 @@ def load_profiles(market, codes):
             age = (today - datetime.strptime(rec.get('u', '1970-01-01'), '%Y-%m-%d').date()).days
         except Exception:
             age = 10 ** 6
-        if age <= PROFILE_TTL_DAYS:
+        # 캐시에 남아 있는 옛 긴 소개(60~90자)는 캐시 미스로 처리해 다시 쓰게 한다.
+        # 1페이지 레이아웃은 짧은 소개를 전제로 하고, 캐시 TTL 이 180일이라
+        # 그냥 두면 반년 동안 긴 소개가 표를 밀어낸다.
+        if age <= PROFILE_TTL_DAYS and len(rec['p']) <= PROFILE_CLIP:
             out[code] = rec['p']
     return out
 
@@ -545,7 +640,7 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 각 항목의 대괄호는 [사유분류/업종/개별재료 유무]다.
 
 위 자료만 근거로, 오늘 시장을 관통하는 흐름을 불릿 3개로 정리하라.
-- 각 불릿은 한 문장, 60~100자.
+- 각 불릿은 한 문장, 50~80자. (리포트가 A4 한 장이라 분량이 곧 지면이다)
 - 반복되는 섹터·테마 / 상승과 하락을 가른 축 / 투자자 관점 시사점 순서로.
 - 같은 업종이 여러 종목에 걸쳐 나타나면 그 업종을 우선 언급하라.
 - 자료에 없는 사실을 추가하지 마라. 여러 종목이 "확인된_뉴스_없음"이면 그 사실 자체를 언급하라.
@@ -574,6 +669,23 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 E = html.escape
 
 
+def clip(text, limit):
+    """렌더 단계 하드 캡.
+
+    분량은 프롬프트로 지시하지만 모델이 넘길 수 있다. A4 1장 보장은 레이아웃
+    쪽에서 결정론적으로 끊어야 하므로 여기서 한 번 더 자른다. 가능하면 마지막
+    공백에서 끊고, 그럴 자리가 없으면 그냥 자른다.
+    """
+    t = re.sub(r'\s+', ' ', text or '').strip()
+    if len(t) <= limit:
+        return t
+    cut = t[:limit]
+    sp = cut.rfind(' ')
+    if sp >= limit * 0.7:
+        cut = cut[:sp]
+    return cut.rstrip(' ,·') + '…'
+
+
 def render_idx_cards(market, idx_data):
     if not idx_data:
         return '<div style="font-size:8pt;color:#94a3b8;margin-bottom:8px">지수 데이터 없음</div>'
@@ -591,19 +703,20 @@ def render_idx_cards(market, idx_data):
         arrow  = '▲' if chg > 0 else ('▼' if chg < 0 else '━')
         sign   = '+' if chg >= 0 else ''
         cards.append(
-            f'<div style="padding:6px 12px;border-radius:8px;border:1.5px solid {border};'
-            f'background:{bg};flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">'
-            f'<span style="font-size:9pt;color:#64748b;font-weight:600">{E(str(idx.get("name", k)))}</span>'
-            f'<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:nowrap">'
-            f'<span style="font-size:13pt;font-weight:800;color:#1e293b;white-space:nowrap">'
+            f'<div style="padding:3px 9px;border-radius:6px;border:1.2px solid {border};'
+            f'background:{bg};flex:1;min-width:0;display:flex;align-items:baseline;'
+            f'gap:6px;flex-wrap:nowrap">'
+            f'<span style="font-size:7.2pt;color:#64748b;font-weight:600;white-space:nowrap">'
+            f'{E(str(idx.get("name", k)))}</span>'
+            f'<span style="font-size:10pt;font-weight:800;color:#1e293b;white-space:nowrap">'
             f'{fmt_idx_val(idx.get("value"))}</span>'
-            f'<span style="font-size:9pt;font-weight:800;color:{color};white-space:nowrap">'
-            f'{arrow} {sign}{chg:.2f} ({sign}{pct:.2f}%)</span>'
-            f'</div></div>'
+            f'<span style="font-size:7pt;font-weight:800;color:{color};white-space:nowrap">'
+            f'{arrow} {sign}{pct:.2f}%</span>'
+            f'</div>'
         )
     if not cards:
-        return '<div style="font-size:8pt;color:#94a3b8;margin-bottom:8px">지수 데이터 없음</div>'
-    return ('<div style="display:flex;gap:8px;flex-wrap:nowrap;margin-bottom:10px">'
+        return '<div style="font-size:7pt;color:#94a3b8;margin-bottom:6px">지수 데이터 없음</div>'
+    return ('<div style="display:flex;gap:6px;flex-wrap:nowrap;margin-bottom:6px">'
             + ''.join(cards) + '</div>')
 
 
@@ -620,30 +733,38 @@ def render_reason_prefix(confidence):
 
 
 def render_table(rows, kind, footnotes, code_header, n_max=10):
-    """kind: 'up' | 'down'. rows 개수가 n_max보다 적으면 제목이 실제 개수를 반영한다."""
+    """kind: 'up' | 'down'. rows 개수가 n_max보다 적으면 제목이 실제 개수를 반영한다.
+
+    회사 소개와 등락 배경은 한 칸에 이어 쓴다. 두 열로 나누면 둘 중 긴 쪽이 행
+    높이를 정해 짧은 쪽 자리가 통째로 버려지는데, 한 칸에 흘려 쓰면 그 낭비가
+    없어져 20종목이 A4 한 장에 들어간다. 소개는 회색, 배경은 진한 색으로 두어
+    글자색이 구분자 역할을 한다(구분 기호를 넣지 않아 줄바꿈 낭비도 없다).
+    """
     up = kind == 'up'
     accent = '#16a34a' if up else '#dc2626'
     arrow = '▲' if up else '▼'
     word  = '상승' if up else '하락'
+    bar = (f'background:#1e3a5f;color:#ffffff;font-size:8pt;font-weight:700;'
+           f'padding:3px 8px;border-left:4px solid {accent}')
 
     if not rows:
         return (
-            '<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:12px">'
-            f'<div style="background:#1e3a5f;color:#ffffff;font-size:9pt;font-weight:700;'
-            f'padding:5px 10px;border-left:5px solid {accent}">{arrow} {word} 종목</div>'
-            '<div style="padding:10px;font-size:8pt;color:#64748b">'
+            '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;margin-bottom:7px">'
+            f'<div style="{bar}">{arrow} {word} 종목</div>'
+            '<div style="padding:7px;font-size:7pt;color:#64748b">'
             f'해당 거래일에 {word}한 종목이 없습니다.</div></div>'
         )
 
     title = (f'{arrow} {word} TOP {n_max}' if len(rows) >= n_max
              else f'{arrow} {word} 종목 {len(rows)}개 (전 종목)')
 
-    head = ['종목코드' if code_header == 'code' else 'Ticker', '종목명', '등락률', '회사 소개', '등락 배경']
-    widths = ['8%', '13%', '7%', '30%', '42%']
+    head = ['종목코드' if code_header == 'code' else 'Ticker', '종목명', '등락률',
+            '회사 개요 · 등락 배경']
+    widths = ['9%', '15%', '7%', '69%']
 
     ths = ''.join(
-        f'<th style="width:{w};background:#334155;color:#ffffff;font-size:7.5pt;'
-        f'font-weight:700;padding:4px 5px;text-align:center;border:0">{E(h)}</th>'
+        f'<th style="width:{w};background:#334155;color:#ffffff;font-size:6.6pt;'
+        f'font-weight:700;padding:2.5px 4px;text-align:center;border:0">{E(h)}</th>'
         for h, w in zip(head, widths))
 
     trs = []
@@ -652,44 +773,66 @@ def render_table(rows, kind, footnotes, code_header, n_max=10):
         note = ''
         if r.get('source_url'):
             footnotes.append((r['name'], r['source_url'], r.get('source_date', '')))
-            note = (f'<sup style="color:#2563eb;font-weight:700;font-size:6pt">'
+            note = (f'<sup style="color:#2563eb;font-weight:700;font-size:5.4pt">'
                     f'[{len(footnotes)}]</sup>')
-        dim = ' color:#64748b;font-style:italic;' if r.get('confidence') == 'low' else ''
-        td = (f'padding:4px 5px;border-bottom:1px solid #e2e8f0;font-size:7.5pt;'
+        dim = 'color:#64748b;font-style:italic;' if r.get('confidence') == 'low' else ''
+        td = ('padding:2.5px 4px;border-bottom:1px solid #e2e8f0;font-size:6.9pt;'
               f'vertical-align:top;background:{bg};')
+        profile = clip(r.get('profile', ''), PROFILE_CLIP)
+        reason  = clip(r.get('reason', ''), REASON_CLIP)
+        prof_html = (f'<span style="color:#8592a3">{E(profile)}</span> '
+                     if profile else '')
         trs.append(
             '<tr>'
-            f'<td style="{td}text-align:center;font-family:Consolas,monospace;font-size:7pt;'
+            f'<td style="{td}text-align:center;font-family:Consolas,monospace;font-size:6.4pt;'
             f'color:#475569">{E(str(r["code"]))}</td>'
             f'<td style="{td}font-weight:700;color:#1e293b">{E(str(r["name"]))}</td>'
             f'<td style="{td}text-align:right;font-weight:800;color:{accent};white-space:nowrap">'
             f'{fmt_ret(r["ret"])}</td>'
-            f'<td style="{td}color:#334155;line-height:1.45">{E(r.get("profile", ""))}</td>'
-            f'<td style="{td}line-height:1.45;{dim}">'
+            # overflow-wrap:anywhere — 긴 영문 토큰(티커·제품명)이 줄 앞에서
+            # 통째로 넘어가면 2줄 예산이 3줄로 튄다. 어디서든 끊게 둔다.
+            f'<td style="{td}line-height:1.42;overflow-wrap:anywhere">'
+            f'{prof_html}'
+            f'<span style="{dim}">'
             f'{render_reason_prefix(r.get("confidence", ""))}'
-            f'{E(r.get("reason", ""))}{note}</td>'
+            f'{E(reason)}{note}</span></td>'
             '</tr>')
 
     return (
-        '<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:12px">'
-        f'<div style="background:#1e3a5f;color:#ffffff;font-size:9pt;font-weight:700;'
-        f'padding:5px 10px;border-left:5px solid {accent}">{title}</div>'
+        '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;margin-bottom:7px">'
+        f'<div style="{bar}">{title}</div>'
         '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
         f'<thead><tr>{ths}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>'
     )
 
 
+def _domain(url):
+    m = re.match(r'https?://([^/]+)', str(url or ''))
+    return (m.group(1) if m else str(url or '')).replace('www.', '')[:22]
+
+
 def render_footnotes(footnotes):
+    """출처를 한 줄씩이 아니라 흘러가는 인라인 목록으로 찍는다.
+
+    종이에 URL 전문을 싣는 건 쓸모가 없는데 자리는 크게 먹는다(20건이면 A4
+    세로 예산의 50mm). 번호·종목명·도메인만 남기고 전체 URL 은 링크와 title
+    속성으로 보존한다 — 화면에서는 클릭·호버로 그대로 확인된다.
+    """
     if not footnotes:
         return ''
-    items = ''.join(
-        f'<div style="margin-bottom:1px">[{i}] {E(str(name))}'
-        + (f' · {E(str(date))}' if date else '')
-        + f' — <span style="color:#2563eb;word-break:break-all">{E(str(url)[:110])}</span></div>'
+    # ★ 항목 사이는 공백으로 이어야 한다. 붙여 쓰면 인라인 박스 사이에 줄바꿈
+    #   기회가 없어(각 항목은 내부가 nowrap) 한 줄에 다 밀렸다가 잘린다.
+    items = ' '.join(
+        '<span style="white-space:nowrap;margin-right:10px">'
+        f'<b style="color:#2563eb">[{i}]</b> {E(str(name)[:12])} '
+        f'<a href="{E(str(url))}" title="{E(str(url))}" target="_blank" '
+        f'style="color:#94a3b8;text-decoration:none">{E(_domain(url))}</a>'
+        + (f' <span style="color:#cbd5e1">{E(str(date)[5:])}</span>' if date else '')
+        + '</span>'
         for i, (name, url, date) in enumerate(footnotes, 1))
-    return ('<div style="border-top:1px solid #e2e8f0;padding-top:6px;margin-top:6px;'
-            'font-size:5.8pt;color:#94a3b8;line-height:1.5">'
-            '<div style="font-weight:700;color:#64748b;margin-bottom:3px">출처</div>'
+    return ('<div style="border-top:1px solid #e2e8f0;padding-top:4px;margin-top:4px;'
+            'font-size:5.4pt;color:#94a3b8;line-height:1.75">'
+            '<span style="font-weight:700;color:#64748b;margin-right:6px">출처</span>'
             f'{items}</div>')
 
 
@@ -700,25 +843,34 @@ def render_html(market, date, idx_data, overview, top, bot):
     tbl_up   = render_table(top, 'up', footnotes, code_header)
     tbl_down = render_table(bot, 'down', footnotes, code_header)
 
-    ov = ''.join(f'<div style="margin-bottom:3px">• {E(line)}</div>' for line in overview)
+    ov = ''.join(f'<div style="margin-bottom:1px">• {E(line)}</div>' for line in overview)
 
     rows_all = top + bot
     total = len(rows_all)
     unknown = sum(1 for r in rows_all if r.get('catalyst_type') == '확인된_뉴스_없음')
     indiv   = sum(1 for r in rows_all if r.get('has_individual_issue'))
-    quality = (f'<span style="color:#94a3b8;font-size:7pt">'
+    nofetch = sum(1 for r in rows_all if r.get('research_failed'))
+    quality = (f'<span style="color:#94a3b8;font-size:6pt">'
                f'대상 {total}종목 · 개별 재료 {indiv}건 · 섹터/매크로 {total - unknown - indiv}건 · '
-               f'미확인 {unknown}건</span>') if total else ''
+               f'미확인 {unknown}건'
+               + (f' · <b style="color:#dc2626">확인 실패 {nofetch}건</b>' if nofetch else '')
+               + '</span>') if total else ''
 
     head_block = (
-        f'<div style="font-size:11pt;font-weight:800;color:#1e293b;margin-bottom:3px">'
-        f'데일리 마켓 브리핑 · {E(market_name)} 증시</div>'
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
-        f'font-size:8pt;color:#64748b;margin-bottom:10px">'
-        f'<span>기준일 {E(date)} · 기준 기간 1D · 시장 {E(market_name)}</span>'
-        f'<span>🕒 생성 __GEN_TIME__ KST</span></div>'
+        f'margin-bottom:5px">'
+        f'<span style="font-size:10pt;font-weight:800;color:#1e293b">'
+        f'데일리 마켓 브리핑 · {E(market_name)} 증시</span>'
+        f'<span style="font-size:6.6pt;color:#94a3b8">🕒 __GEN_TIME__ KST</span></div>'
+        f'<div style="font-size:7pt;color:#64748b;margin-bottom:6px">'
+        f'기준일 {E(date)} · 기준 기간 1D · 시장 {E(market_name)}</div>'
     )
 
+    # 레이아웃: A4 세로 한 장 고정.
+    #   여백 10mm → 가용 190 x 277mm. 표 20행이 여기 들어가야 하므로 본문은
+    #   6.9pt / 행 padding 2.5px 로 잡았고, 회사 소개와 등락 배경을 한 칸에
+    #   합쳐 행당 2줄 안에 끝나게 했다. 분량은 clip() 이 결정론적으로 끊는다.
+    #   (예전 구조는 .page 2개 + page-break-after 라서 인쇄 시 2~4장이 됐다)
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <title>데일리 마켓 브리핑 · {E(market_name)} 증시 · {E(date)}</title>
@@ -726,36 +878,31 @@ def render_html(market, date, idx_data, overview, top, bot):
   @page {{ size: A4 portrait; margin: 10mm; }}
   body {{ margin:0; padding:16px 0; background:#e2e8f0;
           font-family:'Noto Sans KR','Malgun Gothic',sans-serif; color:#1e293b; }}
-  .page {{ width:210mm; min-height:297mm; margin:0 auto 8mm; padding:10mm;
-           background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.15); box-sizing:border-box; }}
+  .page {{ width:210mm; height:297mm; margin:0 auto; padding:10mm;
+           background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.15);
+           box-sizing:border-box; overflow:hidden; }}
   table {{ width:100%; border-collapse:collapse; table-layout:fixed; }}
-  /* 등락 배경이 길어지면 표가 한 장을 넘길 수 있다. 페이지가 넘어가도
-     헤더는 반복되고 행은 중간에 잘리지 않게 한다. */
   thead {{ display:table-header-group; }}
   tr    {{ page-break-inside:avoid; break-inside:avoid; }}
   @media print {{
     body {{ -webkit-print-color-adjust:exact; print-color-adjust:exact;
             background:#fff; padding:0; }}
-    .page {{ box-shadow:none; margin:0; min-height:auto; padding:0;
-             page-break-after:always; }}
-    .page:last-child {{ page-break-after:auto; }}
+    /* 인쇄에서는 @page 여백이 자리를 잡으므로 .page 자체 여백을 없앤다.
+       height:auto 로 두어야 마지막 빈 페이지가 딸려 나오지 않는다. */
+    .page {{ box-shadow:none; margin:0; padding:0; height:auto; overflow:visible; }}
   }}
 </style></head>
 <body>
 <div class="page">
   {head_block}
-  <div style="border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;margin-bottom:12px">
-    <div style="font-size:9pt;font-weight:700;color:#1e3a5f;margin-bottom:6px">시장 개요</div>
+  <div style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;margin-bottom:7px">
     {render_idx_cards(market, idx_data)}
-    <div style="background:#f8fafc;border-radius:6px;padding:7px 9px;font-size:8pt;
-                line-height:1.6;color:#334155">{ov}</div>
+    <div style="background:#f8fafc;border-radius:5px;padding:5px 7px;font-size:7pt;
+                line-height:1.5;color:#334155">{ov}</div>
   </div>
   {tbl_up}
-</div>
-<div class="page">
-  {head_block}
   {tbl_down}
-  <div style="display:flex;justify-content:flex-end;margin-bottom:4px">{quality}</div>
+  <div style="display:flex;justify-content:flex-end">{quality}</div>
   {render_footnotes(footnotes)}
 </div>
 </body></html>"""
@@ -829,8 +976,15 @@ def self_test(out_path):
     assert doc.startswith('<!DOCTYPE html>'), 'DOCTYPE 누락'
     assert doc.rstrip().endswith('</html>'), '</html> 누락'
     assert '__GEN_TIME__' not in doc, '타임스탬프 미치환'
-    assert doc.count('<div class="page">') == 2, '페이지 수 불일치'
+    assert doc.count('<div class="page">') == 1, 'A4 1장이어야 한다'
+    assert 'page-break-after' not in doc, '페이지 강제분할 규칙이 남아 있음'
     assert '테스트종목0' in doc and '하락종목9' in doc, '행 누락'
+    # 회사 소개는 별도 열이 아니라 등락 배경과 같은 칸에 있어야 한다
+    # '<th' 로 세면 <thead> 까지 잡히므로 속성까지 붙여 센다
+    assert doc.count('<th style') == 8, \
+        f'열 개수 이상(표 2개 x 4열 기대): {doc.count("<th style")}'
+    assert '회사 개요 · 등락 배경' in doc, '합친 열 제목 누락'
+    assert '>회사 소개<' not in doc, '회사 소개 열이 아직 분리돼 있음'
     assert doc.count('▲ 상승 TOP 10') == 1 and doc.count('▼ 하락 TOP 10') == 1, '표 제목 이상'
     assert doc.count('<sup') == 8, f'각주 개수 이상: {doc.count("<sup")}'
     # 사유 분류·업종 딱지가 렌더링되지 않아야 한다.
@@ -857,11 +1011,46 @@ def self_test(out_path):
           'catalyst_type': '실적', 'confidence': 'high', 'source_url': ''}],
         'up', [], 'code'), 'HTML 이스케이프 실패'
 
+    # ── clip(): 렌더 단계 하드 캡 ──────────────────────────────────────────────
+    assert clip('짧다', 20) == '짧다', '짧은 문장이 변형됨'
+    assert clip('  공백   정리   확인  ', 40) == '공백 정리 확인', '공백 정규화 실패'
+    long_ko = '가' * 200
+    assert len(clip(long_ko, REASON_CLIP)) == REASON_CLIP + 1, '하드 캡 길이 이상(…포함)'
+    assert clip(long_ko, REASON_CLIP).endswith('…'), '생략 표시 누락'
+    spaced = '앞부분 문장입니다 ' * 20
+    c = clip(spaced, 50)
+    assert len(c) <= 51 and c.endswith('…') and not c.endswith(' …'), f'공백 절단 이상: {c!r}'
+
+    # 프롬프트 한도를 넘긴 입력도 렌더에서 잘려야 한다
+    over = render_table(
+        [{'code': 'Z', 'name': '초과종목', 'ret': 0.05,
+          'profile': '나' * 300, 'reason': '다' * 300,
+          'catalyst_type': '실적', 'confidence': 'high', 'source_url': ''}],
+        'up', [], 'code')
+    assert '나' * (PROFILE_CLIP + 1) not in over, '회사 소개가 캡을 넘겨 렌더됨'
+    assert '다' * (REASON_CLIP + 1) not in over, '등락 배경이 캡을 넘겨 렌더됨'
+    assert over.count('…') == 2, f'생략 표시 개수 이상: {over.count("…")}'
+
+    # ── 리서치 실패 종목 표기 ──────────────────────────────────────────────────
+    failed_rows = [dict(top[0], research_failed=True,
+                        reason='등락 배경을 확인하지 못했습니다.', source_url='')]
+    docf = render_html('kr', '2026-07-28', idx_data, ['총평.'], failed_rows, [])
+    assert '확인 실패 1건' in docf, '리서치 실패 건수가 품질 요약에 안 보임'
+    assert '리서치 실패 — 데이터를 가져오지 못했습니다' not in docf, '옛 실패 문구가 남아 있음'
+    assert '확인 실패' not in doc, '실패가 없는데 실패 건수가 표기됨'
+
+    # ── 출처 목록은 여러 줄로 흘러야 한다 ─────────────────────────────────────
+    # 항목 사이에 공백이 없으면 줄바꿈 기회가 사라져 한 줄에 밀렸다가 잘린다.
+    fn = render_footnotes([(f'종목{i}', f'https://ex{i}.com/a/b', '2026-08-05')
+                           for i in range(20)])
+    assert '</span> <span' in fn, '출처 항목 사이 공백 누락 — 한 줄에 밀려 잘린다'
+    assert fn.count('<span style="white-space:nowrap') == 20, '출처 항목 누락'
+
     # ── 가변 종목 수: 상승 3개 / 하락 0개 ──────────────────────────────────────
     doc2 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 상승했다.'], top[:3], [])
     assert '▲ 상승 종목 3개 (전 종목)' in doc2, '상승 개수 표기 이상'
     assert '하락한 종목이 없습니다' in doc2, '빈 하락 표 처리 이상'
-    assert '<div class="page">' in doc2 and doc2.count('<div class="page">') == 2, '빈 표 페이지 이상'
+    assert doc2.count('<div class="page">') == 1, '빈 표 페이지 이상'
     # 반대 방향
     doc3 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 하락했다.'], [], bot[:5])
     assert '▼ 하락 종목 5개 (전 종목)' in doc3, '하락 개수 표기 이상'
@@ -880,8 +1069,10 @@ def self_test(out_path):
 
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(doc)
-    print(f'[self-test] OK — {len(doc):,} bytes, 페이지 2장, 각주 {doc.count("<sup")}건, '
+    print(f'[self-test] OK — {len(doc):,} bytes, A4 1장, 각주 {doc.count("<sup")}건, '
           f'섹터축약 상승 {c_up}건/하락 {c_down}건 → {out_path}')
+    print('  ※ 실제 1페이지 여부는 브라우저 인쇄 높이로 확인해야 한다 '
+          '(자리 예산: 190 x 277mm).')
     return doc
 
 
@@ -956,9 +1147,12 @@ def main():
     profiles = load_profiles(market, [s['code'] for s in targets])
     print(f'[{market}] 회사 소개 캐시 적중 {len(profiles)}/{len(targets)}종목')
 
-    client = anthropic.Anthropic()
+    # SDK 기본 재시도는 2회다. 20종목을 동시 6개로 돌리면 429 가 뭉쳐서 오므로
+    # 넉넉히 잡는다 (call_research 의 백오프 재시도는 이게 소진된 뒤에 붙는다).
+    client = anthropic.Anthropic(max_retries=4)
 
-    print(f'[{market}] 1단계 — 종목별 리서치 (동시 {RESEARCH_WORKERS}개, 웹검색)...')
+    print(f'[{market}] 1단계 — 종목별 리서치 (동시 {RESEARCH_WORKERS}개, 웹검색, '
+          f'max_tokens {RESEARCH_MAX_TOKENS:,})...')
     with ThreadPoolExecutor(max_workers=RESEARCH_WORKERS) as pool:
         results = list(pool.map(
             lambda s: research_stock(client, market, date, s, idx_ctx, profiles.get(s['code'])),
@@ -969,8 +1163,27 @@ def main():
 
     indiv   = sum(1 for r in results if r['has_individual_issue'])
     unknown = sum(1 for r in results if r['catalyst_type'] == '확인된_뉴스_없음')
+    nofetch = sum(1 for r in results if r.get('research_failed'))
     print(f'[{market}] 리서치 완료 — 개별재료 {indiv} / 섹터·매크로 {len(results) - unknown - indiv} '
-          f'/ 미확인 {unknown} (총 {len(results)}종목)')
+          f'/ 미확인 {unknown} / 확인실패 {nofetch} (총 {len(results)}종목)')
+
+    # ── 게시 게이트 ────────────────────────────────────────────────────────────
+    # 빈칸이 가득한 리포트를 올리면 멱등 가드가 그날의 재시도를 막아버려서
+    # 하루 종일 그대로 남는다(2026-08-05 중국편이 18/20 실패로 그랬다).
+    # 게시를 안 하면 /reviews_history/{market}/{date} 가 비어 있으므로
+    # 30분 뒤 백업 cron 이 같은 기준일로 다시 시도한다.
+    ok_ratio = 1 - nofetch / len(results)
+    if ok_ratio < PUBLISH_MIN_OK_RATIO:
+        print(f'[{market}] [ERROR] 리서치 성공률 {ok_ratio:.0%} '
+              f'({len(results) - nofetch}/{len(results)}) — 게시 기준 '
+              f'{PUBLISH_MIN_OK_RATIO:.0%} 미달.')
+        print(f'[{market}] 반쪽 리포트를 올리지 않고 실패로 끝냅니다.')
+        print(f'[{market}] 이 기준일 리포트가 아직 없으면 백업 cron 이 다시 시도합니다. '
+              f'이미 올라간 리포트가 있으면 그대로 남으니 --force 로 재생성하세요.')
+        sys.exit(1)
+    if nofetch:
+        print(f'[{market}] [WARN] {nofetch}종목 확인 실패 — 게시는 진행합니다 '
+              f'(성공률 {ok_ratio:.0%}).')
 
     # 개별 재료 없이 같은 섹터 이슈를 공유하는 종목은 코멘트를 축약한다 (상승/하락 각각)
     print(f'[{market}] 섹터 중복 코멘트 축약 중...')

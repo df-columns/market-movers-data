@@ -635,7 +635,10 @@ function getTopBottom(di, pk) {
     if (sr === null) continue;
     const rets = {};
     PERIOD_KEYS.forEach(p => { rets[p] = calcRet(di, OFFSETS[p], i); });
-    list.push({ code: STOCKS[i].c, name: STOCKS[i].n, mktcap: STOCKS[i].m || 0, sortRet: sr, rets });
+    // cur 을 같이 담아야 한다 — 빠뜨리면 capRaw() 의 `cur || 'CNY'` 폴백 때문에
+    // 중국 탭에서 홍콩 종목(HKD)까지 ¥ 로 표시된다.
+    list.push({ code: STOCKS[i].c, name: STOCKS[i].n, mktcap: STOCKS[i].m || 0,
+                cur: STOCKS[i].cur, sortRet: sr, rets });
   }
   list.sort((a, b) => b.sortRet - a.sortRet);
   return { top10: list.slice(0, 10), bot10: list.slice(-10).reverse() };
@@ -687,7 +690,8 @@ function renderTop30() {
     if (isUS && US_EXCLUDE.has(STOCKS[i].c)) continue;
     const rets = {};
     PERIOD_KEYS.forEach(p => { rets[p] = calcRet(selDateIdx, OFFSETS[p], i); });
-    list.push({ code: STOCKS[i].c, name: STOCKS[i].n, mktcap: STOCKS[i].m || 0, rets });
+    list.push({ code: STOCKS[i].c, name: STOCKS[i].n, mktcap: STOCKS[i].m || 0,
+                cur: STOCKS[i].cur, rets });
   }
   // 멤버십: 시가총액 상위 30종목 고정
   list.sort((a, b) => b.mktcap - a.mktcap);

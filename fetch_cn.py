@@ -64,6 +64,27 @@ DUAL_AH = [
     ('000338', '2338'), ('000333', '0300'), ('601766', '1766'), ('601066', '6066'),
 ]
 
+# ── 신규상장 시드 ──────────────────────────────────────────────────────────────
+# Yahoo 스크리너는 상장 직후 몇 주간 marketCap 을 채우지 않는다. 그 사이 그 종목은
+# `intradaymarketcap > 0` 필터와 시총 정렬 양쪽에서 빠져 유니버스에 아예 못 든다.
+#
+#   2026-08-06 실측 — 688825.SS(CXMT/장신과기, 2026-07-27 과창판 상장):
+#     · history('1mo')  → 8행 정상, 종가 54.30 CNY
+#     · yf.download     → 정상 (2026-07-29 ~ 08-05 종가 확보)
+#     · marketCap / sharesOutstanding / impliedSharesOutstanding → 전부 None
+#     · screen(cn+hk, 시총순 상위 250) → 없음
+#   시총 3.6조위안으로 중국 1위인데도 상장 열흘이 지나도록 리스트에 안 나왔다.
+#
+# 즉 모자란 건 '상장주식수' 하나뿐이다. 그 값만 여기 적어두고 시총은 매일
+# 그날 종가로 다시 계산한다(가격은 Yahoo 로 정상 수집되므로 자동으로 최신화된다).
+# Yahoo 가 marketCap 을 채우기 시작하면 스크리너가 종목을 잡게 되고,
+# 그때는 Yahoo 값을 쓰면서 '[시드 은퇴 가능]' 로그를 남긴다 → 이 표에서 지우면 된다.
+SEED_NEW_LISTINGS = [
+    # (심볼, 표시명, 통화, 상장주식수, 근거)
+    ('688825.SS', 'CXMT CORPORATION', 'CNY', 66_881_000_000,
+     '2026-07-27 과창판 상장 · 발행 후 총주식수 668.81억주(초과배정 행사 전) · 공모가 8.66위안'),
+]
+
 t0 = time.time()
 
 
@@ -115,6 +136,19 @@ if drop_hk:
     stocks = [s for s in stocks if s[0].split('.')[0] not in drop_hk]
     print(f'  A+H 중복 제거: 홍콩 {before - len(stocks)}종목 제외 → {len(stocks)}종목')
 
+# ── 신규상장 시드 주입 ─────────────────────────────────────────────────────────
+# 시총은 종가를 받은 뒤 계산하므로 여기서는 0 으로 넣어두고 심볼만 확보한다.
+seed_shares = {}
+_have = {s[0] for s in stocks}
+for sym, name, cur, shares, note in SEED_NEW_LISTINGS:
+    if sym in _have:
+        print(f'  [시드 은퇴 가능] {sym}: 스크리너가 이제 잡습니다 '
+              f'— SEED_NEW_LISTINGS 에서 지워도 됩니다.')
+        continue
+    seed_shares[sym] = shares
+    stocks.append((sym, name, 0, cur))
+    print(f'  [시드] {sym} {name} 추가 ({shares:,}주) — {note}')
+
 symbols = [s[0] for s in stocks]
 
 print(f'\n[{MARKET.upper()}] 가격 수집 중 ({len(symbols)}종목)...')
@@ -136,6 +170,9 @@ print(f'  다운로드 완료 ({time.time()-t0:.0f}s)')
 available = set(close_prices.columns)
 all_stocks_full = [(sym, name, mc, cur) for sym, name, mc, cur in stocks if sym in available]
 print(f'  가격 데이터 있음: {len(all_stocks_full)}종목')
+for sym in seed_shares:
+    if sym not in available:
+        print(f'  [WARN] 시드 {sym}: 가격 컬럼이 없습니다 — 심볼이 맞는지 확인하세요.')
 
 tickers_filtered = [s[0] for s in all_stocks_full]
 coverage  = close_prices[tickers_filtered].notna().sum(axis=1)
@@ -143,6 +180,40 @@ threshold = len(tickers_filtered) * 0.8
 valid_idx = coverage[coverage >= threshold].index
 valid_dates = sorted([d.strftime('%Y-%m-%d') for d in valid_idx], reverse=True)[:HISTORY_DAYS]
 print(f'  유효 날짜: {len(valid_dates)}일 ({valid_dates[-1]} ~ {valid_dates[0]})')
+
+# ── 시드 종목 시총 계산 ────────────────────────────────────────────────────────
+# 상장주식수 x 기준일 종가. 스크리너가 준 시총과 같은 단위(현지통화 절대금액)다.
+# 시총 정렬은 이 뒤에서 하므로, 시드 종목도 제 순위에 들어간다.
+if seed_shares:
+    latest = valid_dates[0]
+    rebuilt = []
+    for sym, name, mc, cur in all_stocks_full:
+        shares = seed_shares.get(sym)
+        if shares:
+            px = None
+            try:
+                v = close_prices.loc[latest, sym]
+                px = float(v) if pd.notna(v) else None
+            except Exception:
+                px = None
+            if px and px > 0:
+                mc = int(shares * px)
+                print(f'  [시드 시총] {sym}: {shares:,}주 x {px:,.2f} {cur} '
+                      f'= {mc / 1e8:,.0f}억{cur}')
+            else:
+                print(f'  [WARN] 시드 {sym}: {latest} 종가가 없어 시총을 계산하지 못했습니다.')
+        rebuilt.append((sym, name, mc, cur))
+    all_stocks_full = rebuilt
+
+# 시총 내림차순 정렬 후 상위 TOP_N 만 남긴다.
+# 스크리너 결과는 이미 시총순이지만 시드가 끼어들었으므로 다시 세운다.
+# prices 행렬은 아래에서 이 순서대로 만들기 때문에 정렬은 반드시 여기서 끝나야 한다.
+all_stocks_full.sort(key=lambda s: s[2] or 0, reverse=True)
+if len(all_stocks_full) > TOP_N:
+    print(f'  시총 상위 {TOP_N}종목으로 절단 ({len(all_stocks_full)}종목 중)')
+    all_stocks_full = all_stocks_full[:TOP_N]
+print('  시총 상위 5: ' + ', '.join(
+    f'{n}({s} {(m or 0) / 1e8:,.0f}억{c})' for s, n, m, c in all_stocks_full[:5]))
 
 prices_data = []
 for date in valid_dates:
