@@ -408,9 +408,9 @@ table{min-width:660px}
     <span id="rv-full-meta"></span>
     <span style="flex:1"></span>
     <span id="rv-full-zoombox">
-      <button id="rv-full-out" title="10%p 축소 (− 키 / Ctrl+휠)">−</button>
+      <button id="rv-full-out" title="25%p 축소 (− 키 / Ctrl+휠)">−</button>
       <span id="rv-full-pct">150%</span>
-      <button id="rv-full-in" title="10%p 확대 (+ 키 / Ctrl+휠)">+</button>
+      <button id="rv-full-in" title="25%p 확대 (+ 키 / Ctrl+휠)">+</button>
     </span>
     <button class="modal-btn" id="rv-full-fitbtn" style="border-color:#0369a1;color:#0369a1" title="한 장이 다 보이게 (0 키)">⛶ 화면 맞춤</button>
     <button class="modal-btn" id="rv-full-print" style="border-color:#0369a1;color:#0369a1">🖨 인쇄</button>
@@ -1965,9 +1965,11 @@ const RV_PAGE_W = 794, RV_PAGE_H = 1155;        // A4 210x297mm + body 상하 �
 // 배율은 '화면 맞춤'을 100% 로 두고 그 배수로 관리한다. 절대 배율(0.72 등)을
 // 보여주면 화면 크기마다 숫자가 달라져 감이 안 온다. 맞춤=100% 가 기준점이다.
 const RV_ZOOM_DEFAULT = 1.5;   // 열 때 배율 — 맞춤보다 한 단계 크게 보이도록
-// 10%p 씩 더하고 뺀다. 배수(x1.2)로 하면 150 -> 180 -> 216 -> 259% 처럼
-// 어중간한 숫자가 나와 지금 몇 배인지 감이 안 온다.
-const RV_ZOOM_MIN = 0.4, RV_ZOOM_MAX = 4, RV_ZOOM_STEP_PCT = 10;
+// 25%p 씩 더하고 뺀다. 배수(x1.2)로 하면 150 -> 180 -> 216 -> 259% 처럼 어중간한
+// 숫자가 나오고, 10%p 는 한 번 눌러도 차이가 거의 안 보였다.
+// 하한을 50% 로 둔 이유: 25 의 배수라야 50·75·100·…·400 이 전부 격자에 떨어진다
+// (40% 이면 마지막 한 칸만 50->40 으로 어긋난다).
+const RV_ZOOM_MIN = 0.5, RV_ZOOM_MAX = 4, RV_ZOOM_STEP_PCT = 25;
 let rvFullZoom = RV_ZOOM_DEFAULT;
 let rvFullFitScale = 1;                          // 마지막으로 계산한 맞춤 배율
 
@@ -2004,7 +2006,7 @@ function rvFullLayout() {
 function rvFullSetZoom(z) {
   const stage = document.getElementById('rv-full-stage');
   const prev = rvFullZoom;
-  // 항상 10%p 격자에 맞춘다 — 어떤 경로로 들어와도 표시가 깔끔하게 떨어진다.
+  // 항상 RV_ZOOM_STEP_PCT 격자에 맞춘다 — 어떤 경로로 들어와도 깔끔하게 떨어진다.
   const pct = Math.round(z * 100 / RV_ZOOM_STEP_PCT) * RV_ZOOM_STEP_PCT;
   rvFullZoom = Math.min(Math.max(pct / 100, RV_ZOOM_MIN), RV_ZOOM_MAX);
   if (rvFullZoom === prev) return;
@@ -2017,7 +2019,7 @@ function rvFullSetZoom(z) {
   stage.scrollTop  = cy * r - stage.clientHeight / 2;
 }
 
-// 다음(이전) 10%p 지점으로 옮긴다. 격자에서 벗어난 값이 들어와도 한 번에 정렬된다.
+// 다음(이전) 격자 지점으로 옮긴다. 격자에서 벗어난 값이 들어와도 한 번에 정렬된다.
 function rvFullStepZoom(dir) {
   const pct = Math.round(rvFullZoom * 100);
   const s = RV_ZOOM_STEP_PCT;
@@ -2047,7 +2049,7 @@ function rvFullKeydown(e) {
 function rvFullWheel(e) {
   if (!e.ctrlKey && !e.metaKey) return;          // 일반 휠은 스크롤로 둔다
   e.preventDefault();
-  rvFullStepZoom(e.deltaY < 0 ? 1 : -1);         // 버튼과 같은 10%p 단위
+  rvFullStepZoom(e.deltaY < 0 ? 1 : -1);         // 버튼과 같은 단위(RV_ZOOM_STEP_PCT)
 }
 
 function rvFullBindFrame() {
