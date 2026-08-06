@@ -174,6 +174,24 @@ table{min-width:660px}
 /* ── 시장 리뷰 아카이브(달력) 모달 ── */
 #arch-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:9100;align-items:center;justify-content:center}
 #arch-bg.show{display:flex}
+/* 시장 리뷰 전체화면 뷰어 — '📰 시장 리뷰' 버튼이 바로 이걸 띄운다.
+   팝업(window.open)이 아니라 페이지 안 오버레이인 이유: fetch 를 await 한 뒤
+   창을 열면 사용자 제스처 문맥이 끊겨 팝업 차단기에 막힌다. 아카이브 모달보다
+   z-index 를 낮게 둬서, 여기서 '📅 아카이브' 를 누르면 모달이 위로 올라온다. */
+#rv-full{display:none;position:fixed;inset:0;z-index:9050;background:#e2e8f0;flex-direction:column}
+#rv-full.show{display:flex}
+#rv-full-bar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#fff;border-bottom:1px solid #e2e8f0;flex-shrink:0;flex-wrap:wrap}
+#rv-full-title{font-size:14px;font-weight:800;color:#0f172a;white-space:nowrap}
+#rv-full-meta{font-size:12px;color:#64748b}
+#rv-full-bar .modal-btn{padding:6px 13px;font-size:12px}
+/* 리포트는 A4 고정 크기(210x297mm)다. 그대로 띄우면 세로가 잘려 스크롤해야
+   하므로, 화면에 맞게 축소해 한 장이 한눈에 들어오게 한다.
+   축소된 요소도 레이아웃 상 원래 크기를 차지하므로, 스크롤바가 엉키지 않게
+   #rv-full-fit 의 크기를 JS 가 (원래 크기 x 배율)로 맞춘다. */
+#rv-full-stage{flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:10px}
+#rv-full-fit{position:relative;flex:0 0 auto}
+#rv-full-iframe{position:absolute;top:0;left:0;border:0;display:block;background:#fff;transform-origin:top left;box-shadow:0 2px 12px rgba(0,0,0,.15)}
+#rv-full-empty{flex:1;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px;font-size:14px;color:#64748b;text-align:center;padding:20px}
 #arch-modal{background:#fff;border-radius:16px;padding:22px 26px;max-width:900px;width:95%;box-shadow:0 20px 60px rgba(0,0,0,.18);max-height:92vh;display:flex;flex-direction:column}
 #arch-modal h3{font-size:15px;font-weight:800;color:#0f172a}
 #arch-sub{font-size:12px;color:#94a3b8;margin:2px 0 12px}
@@ -370,6 +388,28 @@ table{min-width:660px}
       <button class="modal-btn" id="arch-delete" style="border-color:#dc2626;color:#dc2626;display:none">🗑 삭제</button>
       <button class="modal-btn modal-btn-ok" id="arch-publish" style="display:none">📢 게시하기</button>
     </div>
+  </div>
+</div>
+
+<!-- 시장 리뷰 전체화면 뷰어 -->
+<div id="rv-full">
+  <div id="rv-full-bar">
+    <span id="rv-full-title">📰 시장 리뷰</span>
+    <span id="rv-full-meta"></span>
+    <span style="flex:1"></span>
+    <button class="modal-btn" id="rv-full-zoom" style="border-color:#0369a1;color:#0369a1">🔍 실제 크기</button>
+    <button class="modal-btn" id="rv-full-print" style="border-color:#0369a1;color:#0369a1">🖨 인쇄</button>
+    <button class="modal-btn" id="rv-full-arch" style="border-color:#0369a1;color:#0369a1">📅 지난 리뷰</button>
+    <button class="modal-btn modal-btn-close" id="rv-full-close">닫기 (Esc)</button>
+  </div>
+  <div id="rv-full-stage">
+    <div id="rv-full-fit">
+      <iframe id="rv-full-iframe" sandbox="allow-same-origin allow-scripts allow-modals allow-popups"></iframe>
+    </div>
+  </div>
+  <div id="rv-full-empty">
+    <div id="rv-full-empty-msg">리뷰를 불러오는 중...</div>
+    <button class="modal-btn" id="rv-full-empty-arch" style="border-color:#0369a1;color:#0369a1;display:none">📅 지난 리뷰에서 찾기</button>
   </div>
 </div>
 
@@ -977,7 +1017,25 @@ function setupUI() {
   document.getElementById('btnWeekly').addEventListener('click', () => openWeeklyPrompt());
 
   // 시장 리뷰 버튼 → 달력(아카이브) 모달
-  document.getElementById('btnReview').addEventListener('click', () => openArchiveModal());
+  // '📰 시장 리뷰' = 그날 리포트를 바로 전체화면으로. 아카이브는 뷰어 안에서 한 번 더.
+  document.getElementById('btnReview').addEventListener('click', () => openReviewFull());
+  document.getElementById('rv-full-close').addEventListener('click', () => closeReviewFull());
+  document.getElementById('rv-full-print').addEventListener('click', () => rvFullPrint());
+  document.getElementById('rv-full-zoom').addEventListener('click', () => rvFullToggleZoom());
+  window.addEventListener('resize', () => {
+    if (document.getElementById('rv-full').classList.contains('show')) rvFullLayout();
+  });
+  document.getElementById('rv-full-arch').addEventListener('click', () => {
+    closeReviewFull(); openArchiveModal();
+  });
+  document.getElementById('rv-full-empty-arch').addEventListener('click', () => {
+    closeReviewFull(); openArchiveModal();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (document.getElementById('arch-bg').classList.contains('show')) closeArchiveModal();
+    else if (document.getElementById('rv-full').classList.contains('show')) closeReviewFull();
+  });
   document.getElementById('arch-close').addEventListener('click', () => closeArchiveModal());
   document.getElementById('arch-prev').addEventListener('click', () => archShiftMonth(-1));
   document.getElementById('arch-next').addEventListener('click', () => archShiftMonth(1));
@@ -1912,9 +1970,115 @@ async function loadArchReview(date) {
 
 function archOpenFullscreen() {
   if (!archViewedHtml) return;
-  const w = window.open('', '_blank');
-  if (!w) { alert('팝업이 차단되었습니다. 이 사이트의 팝업을 허용해주세요.'); return; }
-  w.document.open(); w.document.write(archViewedHtml); w.document.close();
+  // 아카이브에서 본 리뷰도 같은 전체화면 뷰어로 띄운다(팝업 차단 영향 없음).
+  closeArchiveModal();
+  showReviewFull(archViewedHtml,
+                 `📅 ${archViewedDate || ''}` + (archViewedSource === 'latest' ? '  ·  (최신본)' : ''));
+}
+
+// ── 시장 리뷰 전체화면 뷰어 ───────────────────────────────────────────────────
+// '📰 시장 리뷰' 버튼이 여기로 온다. 현재 탭의 최신 리포트를 바로 전체화면에 띄운다.
+let rvFullHtml = null;
+let rvFullActual = false;                       // true = 실제 크기(100%)
+const RV_PAGE_W = 794, RV_PAGE_H = 1155;        // A4 210x297mm + body 상하 여백 16px
+
+// 리포트 실제 크기를 재고, 화면에 맞는 배율로 축소해 앉힌다.
+function rvFullLayout() {
+  const stage = document.getElementById('rv-full-stage');
+  const fit   = document.getElementById('rv-full-fit');
+  const frame = document.getElementById('rv-full-iframe');
+  if (!rvFullHtml) return;
+
+  let w = RV_PAGE_W, h = RV_PAGE_H;
+  try {                                          // srcdoc 은 동일 출처라 측정 가능
+    const de = frame.contentDocument && frame.contentDocument.documentElement;
+    if (de && de.scrollWidth > 100) { w = de.scrollWidth; h = de.scrollHeight; }
+  } catch (e) { /* 측정 실패 시 A4 기본값 */ }
+
+  frame.style.width  = w + 'px';
+  frame.style.height = h + 'px';
+
+  const availW = stage.clientWidth  - 20;        // #rv-full-stage padding 10px
+  const availH = stage.clientHeight - 20;
+  const k = rvFullActual ? 1 : Math.min(availW / w, availH / h, 1);
+  frame.style.transform = `scale(${k})`;
+  fit.style.width  = (w * k) + 'px';
+  fit.style.height = (h * k) + 'px';
+  document.getElementById('rv-full-zoom').textContent =
+    rvFullActual ? '🔍 화면 맞춤' : '🔍 실제 크기';
+}
+
+function showReviewFull(html, meta) {
+  rvFullHtml = html || null;
+  rvFullActual = false;
+  const box   = document.getElementById('rv-full');
+  const frame = document.getElementById('rv-full-iframe');
+  box.classList.add('show');
+  document.getElementById('rv-full-title').textContent =
+    `📰 시장 리뷰 · ${MARKET_LABEL[currentTab] || currentTab}`;
+  document.getElementById('rv-full-meta').textContent = meta || '';
+  const has = !!html;
+  document.getElementById('rv-full-stage').style.display = has ? 'flex' : 'none';
+  document.getElementById('rv-full-empty').style.display = has ? 'none' : 'flex';
+  document.getElementById('rv-full-print').style.display = has ? '' : 'none';
+  document.getElementById('rv-full-zoom').style.display  = has ? '' : 'none';
+  if (has) {
+    // srcdoc 은 비동기로 뜬다 — onload 에서 실제 크기를 재고 배율을 잡는다.
+    frame.onload = () => rvFullLayout();
+    frame.srcdoc = html;
+    rvFullLayout();                              // 기본값으로 먼저 자리를 잡아둔다
+  }
+}
+
+function rvFullSetMessage(msg, offerArchive) {
+  rvFullHtml = null;
+  document.getElementById('rv-full-stage').style.display = 'none';
+  document.getElementById('rv-full-empty').style.display = 'flex';
+  document.getElementById('rv-full-empty-msg').textContent = msg;
+  document.getElementById('rv-full-empty-arch').style.display = offerArchive ? '' : 'none';
+  document.getElementById('rv-full-print').style.display = 'none';
+  document.getElementById('rv-full-zoom').style.display  = 'none';
+}
+
+async function openReviewFull() {
+  // 오버레이를 먼저 띄우고 로딩 상태를 보여준다 — fetch 를 기다린 뒤 열면
+  // 버튼을 누른 느낌이 사라진다.
+  const tab = currentTab;
+  showReviewFull(null, '');
+  rvFullSetMessage('리뷰를 불러오는 중...', false);
+  try {
+    const r = await fetch(reviewPath(tab) + '?t=' + Date.now());
+    const d = r.ok ? await r.json() : null;
+    if (currentTab !== tab) return;            // 로딩 중 탭이 바뀌었으면 버린다
+    if (d && d.html) {
+      showReviewFull(d.html,
+        (d.base_date ? `기준일 ${d.base_date}` : '') +
+        (d.updated_at ? `  ·  게시 ${d.updated_at}` : ''));
+    } else {
+      rvFullSetMessage('아직 게시된 리뷰가 없습니다.', true);
+    }
+  } catch (e) {
+    rvFullSetMessage('리뷰를 불러오지 못했습니다. 네트워크를 확인해주세요.', true);
+  }
+}
+
+function closeReviewFull() {
+  document.getElementById('rv-full').classList.remove('show');
+  document.getElementById('rv-full-iframe').srcdoc = '';
+  rvFullHtml = null;
+}
+
+function rvFullToggleZoom() {
+  rvFullActual = !rvFullActual;
+  rvFullLayout();
+  document.getElementById('rv-full-stage').scrollTop = 0;
+}
+
+function rvFullPrint() {
+  const frame = document.getElementById('rv-full-iframe');
+  if (!rvFullHtml || !frame.contentWindow) return;
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
 }
 
 function archToggleEdit() {

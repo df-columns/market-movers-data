@@ -94,7 +94,8 @@ OVERVIEW_SEARCH_MAX_USES = 5
 # — 조용히 3줄이 되어 A4 두 장으로 새는 것보다 낫다.
 MERGED_LINE_CHARS  = 55    # 실측: 합친 칸 내부폭 473px / 한글 8.46px
 MERGED_MAX_LINES   = 2
-_MERGED_OVERHEAD   = 1 + 3.1              # 공백 + '추정 ' (각주 첨자는 없앴다)
+#  ' // ' 구분자는 6.9pt 에서 약 9.8px → 한글 1.2자 폭. '추정 ' 은 약 3.1자.
+_MERGED_OVERHEAD   = 1.2 + 3.1
 _MERGED_BUDGET     = MERGED_LINE_CHARS * MERGED_MAX_LINES
 _MERGED_USED       = PROFILE_CLIP + REASON_CLIP + _MERGED_OVERHEAD
 assert _MERGED_USED <= _MERGED_BUDGET, (
@@ -929,7 +930,10 @@ def render_table(rows, kind, code_header, n_max=10):
         mid = td + 'vertical-align:middle;'
         profile = clip(r.get('profile', ''), PROFILE_CLIP)
         reason  = clip(r.get('reason', ''), REASON_CLIP)
-        prof_html = (f'<span style="color:#8592a3">{E(profile)}</span> '
+        # 회사 개요는 파란색, 등락 배경은 진한 회색. 색만으로는 경계가 약해서
+        # ' // ' 구분자를 넣는다(연회색이라 읽는 흐름을 끊지 않는다).
+        prof_html = (f'<span style="color:#2563eb">{E(profile)}</span>'
+                     f'<span style="color:#b6c0cc"> // </span>'
                      if profile else '')
         trs.append(
             '<tr>'
@@ -976,16 +980,12 @@ def render_html(market, date, idx_data, overview, top, bot):
         f'<span>{E(line)}</span></div>'
         for line in overview)
 
-    rows_all = top + bot
-    total = len(rows_all)
-    unknown = sum(1 for r in rows_all if r.get('catalyst_type') == '확인된_뉴스_없음')
-    indiv   = sum(1 for r in rows_all if r.get('has_individual_issue'))
-    nofetch = sum(1 for r in rows_all if r.get('research_failed'))
-    quality = (f'<span style="color:#94a3b8;font-size:6pt">'
-               f'대상 {total}종목 · 개별 재료 {indiv}건 · 섹터/매크로 {total - unknown - indiv}건 · '
-               f'미확인 {unknown}건'
-               + (f' · <b style="color:#dc2626">확인 실패 {nofetch}건</b>' if nofetch else '')
-               + '</span>') if total else ''
+    # 품질 요약('대상 20종목 · 개별 재료 N건 …')은 싣지 않는다 — 읽는 사람에게
+    # 쓸모가 없다는 판단. 집계는 실행 로그에 그대로 남는다.
+    # 다만 '확인 실패'는 리포트에 구멍이 있다는 경고여서, 있을 때만 남긴다.
+    nofetch = sum(1 for r in top + bot if r.get('research_failed'))
+    quality = (f'<span style="color:#dc2626;font-size:6pt;font-weight:700">'
+               f'등락 배경 확인 실패 {nofetch}종목</span>') if nofetch else ''
 
     head_block = (
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
@@ -1231,9 +1231,18 @@ def self_test(out_path):
     failed_rows = [dict(top[0], research_failed=True,
                         reason='등락 배경을 확인하지 못했습니다.', source_url='')]
     docf = render_html('kr', '2026-07-28', idx_data, ['총평.'], failed_rows, [])
-    assert '확인 실패 1건' in docf, '리서치 실패 건수가 품질 요약에 안 보임'
+    assert '등락 배경 확인 실패 1종목' in docf, '실패 경고가 안 보임'
     assert '리서치 실패 — 데이터를 가져오지 못했습니다' not in docf, '옛 실패 문구가 남아 있음'
-    assert '확인 실패' not in doc, '실패가 없는데 실패 건수가 표기됨'
+    assert '확인 실패' not in doc, '실패가 없는데 경고가 표기됨'
+    # 품질 요약 문구는 더 이상 싣지 않는다
+    for gone in ('대상 20종목', '개별 재료', '섹터/매크로'):
+        assert gone not in doc, f'품질 요약 문구가 남아 있음: {gone}'
+
+    # ── 회사 개요는 파란색 + ' // ' 구분 ──────────────────────────────────────
+    assert doc.count('color:#2563eb') == 20, \
+        f'회사 개요 파란색이 20행에 안 붙었다: {doc.count("color:#2563eb")}'
+    assert doc.count(' // ') == 20, f"' // ' 구분자 수 이상: {doc.count(' // ')}"
+    assert 'color:#8592a3' not in doc, '옛 회색 개요 스타일이 남아 있음'
 
     # ── 가변 종목 수: 상승 3개 / 하락 0개 ──────────────────────────────────────
     doc2 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 상승했다.'], top[:3], [])
