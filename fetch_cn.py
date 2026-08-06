@@ -2,7 +2,8 @@
 # Yahoo 스크리너(yfinance)로 시총 상위 유니버스 확보 → yfinance로 가격 수집
 # ⚠️ 본토(CNY)+홍콩(HKD) 통화가 섞임 — 시총 정렬은 근사(환율 유사)로 처리, 표시는 통화별 기호 사용
 
-import warnings, json, os, sys, time
+import warnings, json, os, re, sys, time
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import yfinance as yf
 from yfinance import EquityQuery
@@ -33,6 +34,13 @@ MARKET       = 'cn'
 REGIONS      = ['cn', 'hk']     # 상하이(.SS)+선전(.SZ)=cn, 홍콩(.HK)=hk
 TOP_N        = 200
 HISTORY_DAYS = 400
+KST          = timezone(timedelta(hours=9))
+
+# ── A+H 자동 감지 설정 ─────────────────────────────────────────────────────────
+IDENTITY_TTL_DAYS = 180   # 회사 identity(website) 캐시 유효기간
+IDENTITY_WORKERS  = 8     # identity 조회 동시 실행 수
+# website 가 같아도 병합하면 안 되는 (본토코드, 홍콩코드) 쌍 — 오탐이 나오면 여기 적는다
+NEVER_MERGE = set()
 # 지수 선정 근거 — Yahoo의 중국 지수 커버리지는 대부분 비어 있다(2026-07 확인).
 #   정상: 000001.SS(상하이종합) 22행/1개월, ^HSI(항셍) 21행/1개월
 #   불가: 000300.SS(CSI300)은 데이터 공백이 잦아 '전일 대비'가 며칠치가 되어 버림.
@@ -88,6 +96,125 @@ SEED_NEW_LISTINGS = [
 t0 = time.time()
 
 
+# ── A+H 자동 감지 ──────────────────────────────────────────────────────────────
+# DUAL_AH 표는 손으로 채우는 방식이라 계속 뒤처진다. 2026-08-06 전수 점검에서
+# 표에 없는 이중상장 19쌍이 남아 있었다(CNOOC 600938/0883, 립쉰정밀 002475/2475,
+# 헝루이 600276/1276, 하이얼스마트홈 600690/6690, VGT 300476/2476 …).
+# 대부분 2026년에 몰린 A주 기업의 홍콩 2차 상장이다. CNOOC 는 시총 1위권에서
+# 두 자리를 차지했고, 등락률은 두 시장이 따로 움직이니 무버 TOP10 에도 같은
+# 회사가 각각 들어올 수 있었다.
+#
+# 판정 키는 회사 website 다. 약칭(shortName)으로 맞추면 19쌍 중 5쌍만 잡힌다
+# — Yahoo 가 A주·H주에 다른 약칭을 주는 경우가 많다('CNOOC LIMITED' vs 'CNOOC').
+# website 는 get_info() 호출이 필요해 5분마다 도는 이 스크립트에서 매번 175회를
+# 부를 수 없으므로, 회사 소개 캐시와 같은 방식으로 Firebase 에 캐싱한다.
+# 정상 상태에서는 신규 상장 몇 건만 조회한다.
+def safe_key(code):
+    """Firebase 키에 쓸 수 없는 문자 치환 (300476.SZ → 300476_SZ)"""
+    return re.sub(r'[.#$\[\]/]', '_', str(code))
+
+
+def identity_domain(url):
+    """website URL → 비교용 호스트.
+
+    서브도메인은 남긴다. 'smart-home.haier.com' 을 'haier.com' 으로 줄이면
+    같은 그룹의 다른 상장사와 묶여 엉뚱한 종목이 사라진다.
+    """
+    s = (url or '').strip().lower()
+    if not s:
+        return ''
+    s = re.sub(r'^[a-z][a-z0-9+.-]*://', '', s)
+    s = s.split('/')[0].split('?')[0].split('#')[0]
+    s = re.sub(r':\d+$', '', s)
+    s = re.sub(r'^www\.', '', s)
+    return s if '.' in s else ''
+
+
+def load_identity(symbols):
+    """캐시된 website 를 읽는다 (TTL 안쪽만). 빈 문자열도 유효한 값이다."""
+    try:
+        raw = firebase_db.reference(f'/identity/{MARKET}').get() or {}
+    except Exception as e:
+        print(f'  [WARN] identity 캐시 조회 실패: {e}')
+        return {}
+    today = datetime.now(KST).date()
+    out = {}
+    for sym in symbols:
+        rec = raw.get(safe_key(sym))
+        if not isinstance(rec, dict) or 'w' not in rec:
+            continue
+        try:
+            age = (today - datetime.strptime(rec.get('u', '1970-01-01'), '%Y-%m-%d').date()).days
+        except Exception:
+            continue
+        if age <= IDENTITY_TTL_DAYS:
+            out[sym] = rec['w']
+    return out
+
+
+def fetch_identity(symbols):
+    """캐시에 없는 종목의 website 를 Yahoo 에서 가져온다.
+
+    조회 실패(None)는 캐시에 넣지 않아 다음 실행에서 다시 시도한다.
+    website 가 없는 종목은 ''로 캐시해 매번 헛조회하지 않게 한다.
+    """
+    def one(sym):
+        try:
+            return sym, identity_domain((yf.Ticker(sym).get_info() or {}).get('website'))
+        except Exception:
+            return sym, None
+    out = {}
+    with ThreadPoolExecutor(max_workers=IDENTITY_WORKERS) as pool:
+        for sym, dom in pool.map(one, symbols):
+            if dom is not None:
+                out[sym] = dom
+    return out
+
+
+def save_identity(fresh):
+    if not fresh:
+        return
+    today = datetime.now(KST).strftime('%Y-%m-%d')
+    try:
+        firebase_db.reference(f'/identity/{MARKET}').update(
+            {safe_key(sym): {'w': dom, 'u': today} for sym, dom in fresh.items()})
+    except Exception as e:
+        print(f'  [WARN] identity 캐시 저장 실패: {e}')
+
+
+def dedupe_by_identity(stocks, ident):
+    """website 가 같은 '본토 1 + 홍콩 1' 쌍에서 홍콩(H주)을 제거한다.
+
+    보수적으로 판정한다 — 한 도메인에 3종목 이상 묶이거나 본토끼리·홍콩끼리
+    묶이면 병합하지 않고 로그만 남긴다. 모회사와 자회사가 같은 도메인을 쓰는
+    경우까지 자동으로 지워버리면 조용히 종목이 사라진다.
+
+    반환: (남은 stocks, 병합한 쌍, 판단 보류한 그룹)
+    """
+    groups = {}
+    for row in stocks:
+        dom = ident.get(row[0])
+        if dom:
+            groups.setdefault(dom, []).append(row[0])
+
+    drop, merged, skipped = set(), [], []
+    for dom, syms in sorted(groups.items()):
+        if len(syms) < 2:
+            continue
+        hk = [s for s in syms if s.endswith('.HK')]
+        cn = [s for s in syms if not s.endswith('.HK')]
+        if len(syms) != 2 or len(hk) != 1 or len(cn) != 1:
+            skipped.append((dom, sorted(syms)))
+            continue
+        a, h = cn[0], hk[0]
+        if (a.split('.')[0], h.split('.')[0]) in NEVER_MERGE:
+            print(f'  [A+H 예외] {dom}: NEVER_MERGE 지정 — {a} / {h} 둘 다 유지')
+            continue
+        drop.add(h)
+        merged.append((a, h, dom))
+    return [s for s in stocks if s[0] not in drop], merged, skipped
+
+
 def screen_universe(regions, top_n):
     if len(regions) == 1:
         region_q = EquityQuery('eq', ['region', regions[0]])
@@ -134,7 +261,32 @@ drop_hk = {h for a, h in DUAL_AH if a in present and h in present}
 if drop_hk:
     before = len(stocks)
     stocks = [s for s in stocks if s[0].split('.')[0] not in drop_hk]
-    print(f'  A+H 중복 제거: 홍콩 {before - len(stocks)}종목 제외 → {len(stocks)}종목')
+    print(f'  A+H 중복 제거(표): 홍콩 {before - len(stocks)}종목 제외 → {len(stocks)}종목')
+
+# ── A+H 자동 감지 (회사 website 기준) ──────────────────────────────────────────
+print(f'\n[{MARKET.upper()}] A+H 자동 감지 (회사 website 기준)...')
+_syms = [s[0] for s in stocks]
+identity = load_identity(_syms)
+print(f'  identity 캐시 적중 {len(identity)}/{len(_syms)}종목')
+_todo = [s for s in _syms if s not in identity]
+if _todo:
+    print(f'  캐시 없는 {len(_todo)}종목 조회 중 (동시 {IDENTITY_WORKERS})...')
+    _fresh = fetch_identity(_todo)
+    identity.update(_fresh)
+    save_identity(_fresh)
+    print(f'  조회 완료 {len(_fresh)}/{len(_todo)}종목 '
+          f'({time.time() - t0:.0f}s 경과)')
+    if len(_fresh) < len(_todo):
+        print(f'  [NOTE] {len(_todo) - len(_fresh)}종목 조회 실패 — '
+              f'다음 실행에서 다시 시도합니다(그 사이 중복이 남을 수 있음).')
+
+_before = len(stocks)
+stocks, _merged, _skipped = dedupe_by_identity(stocks, identity)
+for a, h, dom in _merged:
+    print(f'  [A+H 자동] {h} 제거 ← {a} 와 동일 회사 ({dom})')
+for dom, syms in _skipped:
+    print(f'  [A+H 보류] {dom}: {len(syms)}종목이 묶여 판단 보류 — {", ".join(syms)}')
+print(f'  자동 제거 {_before - len(stocks)}종목 → {len(stocks)}종목')
 
 # ── 신규상장 시드 주입 ─────────────────────────────────────────────────────────
 # 시총은 종가를 받은 뒤 계산하므로 여기서는 0 으로 넣어두고 심볼만 확보한다.
@@ -260,8 +412,7 @@ if not indices:
 
 print(f'\n[{MARKET.upper()}] Firebase 업로드 중...')
 stocks_data = [{'c': sym, 'n': name, 'm': int(mc), 'cur': cur} for sym, name, mc, cur in all_stocks_full]
-KST = timezone(timedelta(hours=9))
-collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
+collected_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M')   # KST 는 상단에 정의
 
 import re as _re
 existing_raw = firebase_db.reference(f'/v1/{MARKET}/indices').get() or {}
