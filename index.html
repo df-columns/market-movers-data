@@ -188,8 +188,17 @@ table{min-width:660px}
    하므로, 화면에 맞게 축소해 한 장이 한눈에 들어오게 한다.
    축소된 요소도 레이아웃 상 원래 크기를 차지하므로, 스크롤바가 엉키지 않게
    #rv-full-fit 의 크기를 JS 가 (원래 크기 x 배율)로 맞춘다. */
-#rv-full-stage{flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:10px}
-#rv-full-fit{position:relative;flex:0 0 auto}
+/* flex + justify-content:center 가 아니라 text-align:center + inline-block 인 이유:
+   확대해서 내용이 스테이지보다 넓어지면 flex 중앙정렬은 왼쪽을 스크롤로 볼 수
+   없게 잘라버린다. inline-block 은 넘칠 때 왼쪽 끝(x=0)부터 놓여 다 볼 수 있다. */
+#rv-full-stage{flex:1;overflow:auto;padding:10px;text-align:center}
+#rv-full-fit{position:relative;display:inline-block;vertical-align:top}
+/* 확대·축소 컨트롤 */
+#rv-full-zoombox{display:flex;align-items:center;gap:2px;border:1.5px solid #e2e8f0;border-radius:9px;overflow:hidden;flex-shrink:0}
+#rv-full-zoombox button{width:28px;height:28px;border:0;background:#fff;font-size:16px;font-weight:700;color:#334155;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center}
+#rv-full-zoombox button:hover{background:#f0f9ff;color:#0369a1}
+#rv-full-zoombox button:disabled{opacity:.3;cursor:default;background:#fff;color:#334155}
+#rv-full-pct{min-width:52px;text-align:center;font-size:12px;font-weight:700;color:#475569;font-variant-numeric:tabular-nums;user-select:none}
 #rv-full-iframe{position:absolute;top:0;left:0;border:0;display:block;background:#fff;transform-origin:top left;box-shadow:0 2px 12px rgba(0,0,0,.15)}
 #rv-full-empty{flex:1;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px;font-size:14px;color:#64748b;text-align:center;padding:20px}
 #arch-modal{background:#fff;border-radius:16px;padding:22px 26px;max-width:900px;width:95%;box-shadow:0 20px 60px rgba(0,0,0,.18);max-height:92vh;display:flex;flex-direction:column}
@@ -397,7 +406,12 @@ table{min-width:660px}
     <span id="rv-full-title">📰 시장 리뷰</span>
     <span id="rv-full-meta"></span>
     <span style="flex:1"></span>
-    <button class="modal-btn" id="rv-full-zoom" style="border-color:#0369a1;color:#0369a1">🔍 실제 크기</button>
+    <span id="rv-full-zoombox">
+      <button id="rv-full-out" title="축소 (− 키 / Ctrl+휠)">−</button>
+      <span id="rv-full-pct">150%</span>
+      <button id="rv-full-in" title="확대 (+ 키 / Ctrl+휠)">+</button>
+    </span>
+    <button class="modal-btn" id="rv-full-fitbtn" style="border-color:#0369a1;color:#0369a1" title="한 장이 다 보이게 (0 키)">⛶ 화면 맞춤</button>
     <button class="modal-btn" id="rv-full-print" style="border-color:#0369a1;color:#0369a1">🖨 인쇄</button>
     <button class="modal-btn" id="rv-full-arch" style="border-color:#0369a1;color:#0369a1">📅 지난 리뷰</button>
     <button class="modal-btn modal-btn-close" id="rv-full-close">닫기 (Esc)</button>
@@ -1021,7 +1035,10 @@ function setupUI() {
   document.getElementById('btnReview').addEventListener('click', () => openReviewFull());
   document.getElementById('rv-full-close').addEventListener('click', () => closeReviewFull());
   document.getElementById('rv-full-print').addEventListener('click', () => rvFullPrint());
-  document.getElementById('rv-full-zoom').addEventListener('click', () => rvFullToggleZoom());
+  document.getElementById('rv-full-in').addEventListener('click', () => rvFullZoomBy(RV_ZOOM_STEP));
+  document.getElementById('rv-full-out').addEventListener('click', () => rvFullZoomBy(1 / RV_ZOOM_STEP));
+  document.getElementById('rv-full-fitbtn').addEventListener('click', () => rvFullFitToScreen());
+  document.getElementById('rv-full-stage').addEventListener('wheel', rvFullWheel, { passive: false });
   window.addEventListener('resize', () => {
     if (document.getElementById('rv-full').classList.contains('show')) rvFullLayout();
   });
@@ -1032,9 +1049,18 @@ function setupUI() {
     closeReviewFull(); openArchiveModal();
   });
   document.addEventListener('keydown', e => {
-    if (e.key !== 'Escape') return;
-    if (document.getElementById('arch-bg').classList.contains('show')) closeArchiveModal();
-    else if (document.getElementById('rv-full').classList.contains('show')) closeReviewFull();
+    const archOpen = document.getElementById('arch-bg').classList.contains('show');
+    const fullOpen = document.getElementById('rv-full').classList.contains('show');
+    if (e.key === 'Escape') {
+      if (archOpen) closeArchiveModal();
+      else if (fullOpen) closeReviewFull();
+      return;
+    }
+    // 확대·축소 키는 뷰어가 떠 있을 때만, 입력창에 타이핑 중이 아닐 때만
+    if (!fullOpen || archOpen) return;
+    const t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    rvFullKeydown(e);
   });
   document.getElementById('arch-close').addEventListener('click', () => closeArchiveModal());
   document.getElementById('arch-prev').addEventListener('click', () => archShiftMonth(-1));
@@ -1979,10 +2005,16 @@ function archOpenFullscreen() {
 // ── 시장 리뷰 전체화면 뷰어 ───────────────────────────────────────────────────
 // '📰 시장 리뷰' 버튼이 여기로 온다. 현재 탭의 최신 리포트를 바로 전체화면에 띄운다.
 let rvFullHtml = null;
-let rvFullActual = false;                       // true = 실제 크기(100%)
 const RV_PAGE_W = 794, RV_PAGE_H = 1155;        // A4 210x297mm + body 상하 여백 16px
 
-// 리포트 실제 크기를 재고, 화면에 맞는 배율로 축소해 앉힌다.
+// 배율은 '화면 맞춤'을 100% 로 두고 그 배수로 관리한다. 절대 배율(0.72 등)을
+// 보여주면 화면 크기마다 숫자가 달라져 감이 안 온다. 맞춤=100% 가 기준점이다.
+const RV_ZOOM_DEFAULT = 1.5;   // 열 때 배율 — 맞춤보다 한 단계 크게 보이도록
+const RV_ZOOM_MIN = 0.4, RV_ZOOM_MAX = 4, RV_ZOOM_STEP = 1.2;
+let rvFullZoom = RV_ZOOM_DEFAULT;
+let rvFullFitScale = 1;                          // 마지막으로 계산한 맞춤 배율
+
+// 리포트 실제 크기를 재고, 맞춤 배율 x rvFullZoom 으로 앉힌다.
 function rvFullLayout() {
   const stage = document.getElementById('rv-full-stage');
   const fit   = document.getElementById('rv-full-fit');
@@ -2000,31 +2032,90 @@ function rvFullLayout() {
 
   const availW = stage.clientWidth  - 20;        // #rv-full-stage padding 10px
   const availH = stage.clientHeight - 20;
-  const k = rvFullActual ? 1 : Math.min(availW / w, availH / h, 1);
+  rvFullFitScale = Math.max(Math.min(availW / w, availH / h), 0.1);
+  const k = rvFullFitScale * rvFullZoom;
+  // 축소된 요소도 레이아웃 상 원래 크기를 차지하므로 래퍼 크기를 직접 맞춘다.
   frame.style.transform = `scale(${k})`;
   fit.style.width  = (w * k) + 'px';
   fit.style.height = (h * k) + 'px';
-  document.getElementById('rv-full-zoom').textContent =
-    rvFullActual ? '🔍 화면 맞춤' : '🔍 실제 크기';
+
+  document.getElementById('rv-full-pct').textContent = Math.round(rvFullZoom * 100) + '%';
+  document.getElementById('rv-full-out').disabled = rvFullZoom <= RV_ZOOM_MIN + 1e-6;
+  document.getElementById('rv-full-in').disabled  = rvFullZoom >= RV_ZOOM_MAX - 1e-6;
+}
+
+function rvFullSetZoom(z) {
+  const stage = document.getElementById('rv-full-stage');
+  const prev = rvFullZoom;
+  rvFullZoom = Math.min(Math.max(z, RV_ZOOM_MIN), RV_ZOOM_MAX);
+  if (rvFullZoom === prev) return;
+  // 보고 있던 지점을 유지한다 — 확대할 때마다 맨 위로 튀면 못 읽는다.
+  const cx = (stage.scrollLeft + stage.clientWidth / 2);
+  const cy = (stage.scrollTop + stage.clientHeight / 2);
+  const r = rvFullZoom / prev;
+  rvFullLayout();
+  stage.scrollLeft = cx * r - stage.clientWidth / 2;
+  stage.scrollTop  = cy * r - stage.clientHeight / 2;
+}
+
+function rvFullZoomBy(f) { rvFullSetZoom(rvFullZoom * f); }
+
+function rvFullFitToScreen() {
+  rvFullZoom = 1;
+  rvFullLayout();
+  const stage = document.getElementById('rv-full-stage');
+  stage.scrollTop = 0; stage.scrollLeft = 0;
+}
+
+// 뷰어 안에서도 키·Ctrl+휠이 먹어야 한다. iframe 에 포커스가 들어가면 부모
+// document 의 keydown 은 안 오므로, 같은 핸들러를 iframe 문서에도 붙인다
+// (srcdoc + allow-same-origin 이라 접근 가능).
+function rvFullKeydown(e) {
+  if (e.key === 'Escape') { closeReviewFull(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '+' || e.key === '=') { e.preventDefault(); rvFullZoomBy(RV_ZOOM_STEP); }
+  else if (e.key === '-' || e.key === '_') { e.preventDefault(); rvFullZoomBy(1 / RV_ZOOM_STEP); }
+  else if (e.key === '0') { e.preventDefault(); rvFullFitToScreen(); }
+}
+
+function rvFullWheel(e) {
+  if (!e.ctrlKey && !e.metaKey) return;          // 일반 휠은 스크롤로 둔다
+  e.preventDefault();
+  rvFullZoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1);
+}
+
+function rvFullBindFrame() {
+  const doc = document.getElementById('rv-full-iframe').contentDocument;
+  if (!doc) return;
+  doc.addEventListener('keydown', rvFullKeydown);
+  doc.addEventListener('wheel', rvFullWheel, { passive: false });
 }
 
 function showReviewFull(html, meta) {
   rvFullHtml = html || null;
-  rvFullActual = false;
+  rvFullZoom = RV_ZOOM_DEFAULT;                  // 열 때마다 기본 배율로 되돌린다
   const box   = document.getElementById('rv-full');
   const frame = document.getElementById('rv-full-iframe');
+  const stage = document.getElementById('rv-full-stage');
   box.classList.add('show');
   document.getElementById('rv-full-title').textContent =
     `📰 시장 리뷰 · ${MARKET_LABEL[currentTab] || currentTab}`;
   document.getElementById('rv-full-meta').textContent = meta || '';
   const has = !!html;
-  document.getElementById('rv-full-stage').style.display = has ? 'flex' : 'none';
-  document.getElementById('rv-full-empty').style.display = has ? 'none' : 'flex';
-  document.getElementById('rv-full-print').style.display = has ? '' : 'none';
-  document.getElementById('rv-full-zoom').style.display  = has ? '' : 'none';
+  stage.style.display = has ? '' : 'none';
+  document.getElementById('rv-full-empty').style.display  = has ? 'none' : 'flex';
+  document.getElementById('rv-full-print').style.display  = has ? '' : 'none';
+  document.getElementById('rv-full-zoombox').style.display = has ? '' : 'none';
+  document.getElementById('rv-full-fitbtn').style.display = has ? '' : 'none';
   if (has) {
     // srcdoc 은 비동기로 뜬다 — onload 에서 실제 크기를 재고 배율을 잡는다.
-    frame.onload = () => rvFullLayout();
+    frame.onload = () => {
+      rvFullLayout();
+      rvFullBindFrame();
+      // 기본 배율은 맞춤보다 크므로 세로 스크롤이 생긴다. 리포트 머리부터 보여준다.
+      stage.scrollTop = 0;
+      stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
+    };
     frame.srcdoc = html;
     rvFullLayout();                              // 기본값으로 먼저 자리를 잡아둔다
   }
@@ -2037,7 +2128,8 @@ function rvFullSetMessage(msg, offerArchive) {
   document.getElementById('rv-full-empty-msg').textContent = msg;
   document.getElementById('rv-full-empty-arch').style.display = offerArchive ? '' : 'none';
   document.getElementById('rv-full-print').style.display = 'none';
-  document.getElementById('rv-full-zoom').style.display  = 'none';
+  document.getElementById('rv-full-zoombox').style.display = 'none';
+  document.getElementById('rv-full-fitbtn').style.display = 'none';
 }
 
 async function openReviewFull() {
@@ -2068,11 +2160,6 @@ function closeReviewFull() {
   rvFullHtml = null;
 }
 
-function rvFullToggleZoom() {
-  rvFullActual = !rvFullActual;
-  rvFullLayout();
-  document.getElementById('rv-full-stage').scrollTop = 0;
-}
 
 function rvFullPrint() {
   const frame = document.getElementById('rv-full-iframe');
