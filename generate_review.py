@@ -83,7 +83,10 @@ NAME_CLIP    = 40          # 종목명 열 하드 캡 (아래 NAME_NOISE 로 꼬
 OVERVIEW_LINES     = 6
 OVERVIEW_MIN_CHARS = 55    # 총평 한 줄 목표 하한
 OVERVIEW_MAX_CHARS = 95    # 총평 한 줄 목표 상한 (7pt 전폭에서 약 1.4줄)
-OVERVIEW_CLIP      = 110   # 총평 한 줄 하드 캡 (렌더에서 두 줄까지 허용)
+# 총평 한 줄 하드 캡. 실측(2026-08-06): 총평 텍스트 폭 677px, 7pt 한글 8.58px
+# → 순한글 78자/줄. 숫자·영문이 섞이면 100자도 한 줄에 들어간다.
+# 렌더에서 두 줄까지 허용하므로 순한글 기준 156자가 상한. 150 으로 둔다.
+OVERVIEW_CLIP      = 150
 # 총평은 매크로 원인('왜 금이 올랐나')을 확인해야 하므로 웹검색을 준다.
 OVERVIEW_SEARCH_MAX_USES = 5
 
@@ -683,6 +686,24 @@ def save_profiles(market, results):
 # 그래서 총평만은 웹검색을 허용한다 — 표에 있는 개별 재료를 합쳐도 '왜 금 현물이
 # 급등했나' 같은 매크로 원인은 나오지 않기 때문이다. 검색은 그 원인을 확인하는
 # 용도로만 쓰고, 없으면 없다고 쓰게 한다.
+def _split_overview_lines(lines):
+    """한 줄에 두 문장을 붙여 낸 경우 문장 단위로 쪼갠다.
+
+    모델이 6개 항목을 5줄로 합쳐 내면 그 줄만 길어져 clip() 에 잘리고 내용이
+    통째로 사라진다(실측 2026-08-06 미국편: 6줄 중 2줄이 잘렸다).
+    한국어 종결어미 뒤 마침표에서만 나누므로 '2.89대 1', '1.6~2.5%' 같은
+    소수점이나 영문 약어는 건드리지 않는다.
+    """
+    out = []
+    for ln in lines:
+        for part in re.split(r'(?<=[다요음임])\.\s*(?=\S)', ln):
+            p = part.strip()
+            if not p:
+                continue
+            out.append(p if p.endswith(('.', '!', '?')) else p + '.')
+    return out
+
+
 def build_overview(client, market, date, idx_ctx, top, bot):
     def brief(rows):
         if not rows:
@@ -754,7 +775,9 @@ def build_overview(client, market, date, idx_ctx, top, bot):
         text = ''.join(b.text for b in final.content if b.type == 'text')
         lines = [re.sub(r'^\s*[-•*]\s*|^\s*\d+[.)]\s*', '', ln).strip()
                  for ln in text.strip().splitlines() if ln.strip()]
-        lines = [clip(ln, OVERVIEW_CLIP) for ln in lines if ln][:OVERVIEW_LINES]
+        # 자르기 전에 문장 단위로 되쪼갠다 — 합쳐 낸 줄을 그냥 자르면 내용이 날아간다
+        lines = _split_overview_lines([ln for ln in lines if ln])
+        lines = [clip(ln, OVERVIEW_CLIP) for ln in lines][:OVERVIEW_LINES]
         if not lines:
             print(f'  [WARN] 총평 비어 있음 — {_describe_stop(final, text)}')
             return ['총평을 생성하지 못했습니다.']
@@ -1122,6 +1145,18 @@ def self_test(out_path):
     # ── 총평 ──────────────────────────────────────────────────────────────────
     for line in overview:
         assert line in doc, f'총평 줄 누락: {line[:20]}'
+
+    # 합쳐 낸 줄을 문장 단위로 되쪼갠다 (실측 사례 기반)
+    merged = ('실적 서프라이즈가 지수를 밀어올린 전면적 강세장이었다.'
+              '축의 배경은 호르무즈 협상 기대에 따른 유가 급락이다.')
+    got = _split_overview_lines([merged])
+    assert got == ['실적 서프라이즈가 지수를 밀어올린 전면적 강세장이었다.',
+                   '축의 배경은 호르무즈 협상 기대에 따른 유가 급락이다.'], f'문장 분리 실패: {got}'
+    # 소수점·영문 약어는 나누지 않는다
+    keep = '나스닥 상승·하락 종목비가 2.89대 1이고 유가는 1.6~2.5% 밀렸다.'
+    assert _split_overview_lines([keep]) == [keep], '소수점에서 잘못 나뉨'
+    assert _split_overview_lines(['마침표 없는 줄']) == ['마침표 없는 줄.'], '종결 보정 실패'
+    assert _split_overview_lines(['', '  ']) == [], '빈 줄 처리 이상'
     # 사유 분류·업종 딱지가 렌더링되지 않아야 한다.
     # (총평 산문에 '실적' 같은 단어가 정상적으로 등장하므로 단어가 아니라
     #  딱지 마크업 자체를 검사한다)
