@@ -168,12 +168,14 @@ RESEARCH_SCHEMA = {
         "has_individual_issue": {"type": "boolean"},
         "sector_issue":         {"type": "string"},
         "source_url":           {"type": "string"},
+        "source_title":         {"type": "string"},
         "source_date":          {"type": "string"},
         "confidence":           {"type": "string", "enum": ["high", "medium", "low"]},
         "profile":              {"type": "string"},
     },
     "required": ["reason", "catalyst_type", "sector", "has_individual_issue",
-                 "sector_issue", "source_url", "source_date", "confidence", "profile"],
+                 "sector_issue", "source_url", "source_title", "source_date",
+                 "confidence", "profile"],
     "additionalProperties": False,
 }
 
@@ -405,6 +407,9 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
    ※ 이 값은 같은 업종 종목이 여러 개일 때 코멘트를 한 줄로 묶는 데 쓰인다.
 9. source_url은 실제로 검색 결과에서 확인한 기사·공시 URL. 없으면 빈 문자열("").
    source_date는 그 출처의 보도일(YYYY-MM-DD). 없으면 빈 문자열("").
+   source_title은 그 기사·공시의 실제 제목을 원문 그대로. 지어내거나 번역하지 마라.
+   (한국어 요약은 reason 이 담당한다. 여기는 원문 제목이다.)
+   URL 이 없으면 source_title 도 빈 문자열("").
 10. confidence — high: 공시·IR 등 1차 출처 확인 / medium: 언론 보도 확인 / low: 추정
 {profile_rule}
 
@@ -418,7 +423,8 @@ def _json_fallback_instruction():
         '{"reason": "...", "catalyst_type": "'
         + '|'.join(CATALYST_ENUM)
         + '", "sector": "...", "has_individual_issue": true|false, '
-          '"sector_issue": "...", "source_url": "...", "source_date": "YYYY-MM-DD", '
+          '"sector_issue": "...", "source_url": "...", "source_title": "...", '
+          '"source_date": "YYYY-MM-DD", '
           '"confidence": "high|medium|low", "profile": "..."}'
     )
 
@@ -565,7 +571,7 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
                 'reason': '등락 배경을 확인하지 못했습니다.',
                 'catalyst_type': '확인된_뉴스_없음',
                 'sector': '', 'has_individual_issue': False, 'sector_issue': '',
-                'source_url': '', 'source_date': '',
+                'source_url': '', 'source_title': '', 'source_date': '',
                 'confidence': 'low',
                 'profile': cached_profile or '',
                 'profile_is_new': False,
@@ -584,6 +590,8 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
         'has_individual_issue': bool(data.get('has_individual_issue')),
         'sector_issue':         (data.get('sector_issue') or '').strip(),
         'source_url':           (data.get('source_url') or '').strip(),
+        # 제목은 뉴스 목록(/news)용이라 리포트에는 안 쓴다. 저장 크기만 묶어둔다.
+        'source_title':         (data.get('source_title') or '').strip()[:140],
         'source_date':          (data.get('source_date') or '').strip(),
         'confidence':           conf if conf in ('high', 'medium', 'low') else 'low',
         'profile':              cached_profile or profile or '회사 정보 미확보',
@@ -741,6 +749,100 @@ def _split_overview_lines(lines):
     return out
 
 
+# 총평 구조화 출력 — 6줄 + 그 근거가 된 매크로 출처.
+# 출처는 뉴스 목록(/news)의 2층 재료다. 리포트 본문에는 쓰지 않는다.
+OVERVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "lines": {"type": "array", "items": {"type": "string"}},
+        "macro_sources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string"},   # 금, 유가, 금리, 환율, 고용지표 …
+                    "title": {"type": "string"},   # 기사 원문 제목
+                    "url":   {"type": "string"},
+                    "date":  {"type": "string"},
+                    "note":  {"type": "string"},   # 한국어 한 줄 — 시장에 준 영향
+                },
+                "required": ["topic", "title", "url", "date", "note"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["lines", "macro_sources"],
+    "additionalProperties": False,
+}
+
+MACRO_MAX_ITEMS = 6
+
+
+def _overview_structured(client, prompt):
+    """총평을 구조화 출력으로 받는다. 실패하면 (None, []) 를 돌려 평문 경로로 넘긴다."""
+    instr = (
+        f"\n\n━━━ 출력 형식 ━━━\n"
+        f"lines: 위 규칙대로 쓴 {OVERVIEW_LINES}개의 문장(문자열 배열). 기호·번호 없이 문장만.\n"
+        f"macro_sources: 매크로 원인을 확인하려고 실제로 본 기사·자료를 최대 "
+        f"{MACRO_MAX_ITEMS}건.\n"
+        "  topic 은 무엇에 대한 것인지 짧은 명사(금, 유가, 미 국채금리, 환율, 고용지표 …).\n"
+        "  title 은 기사 원문 제목 그대로, url 은 실제 확인한 주소, date 는 보도일(YYYY-MM-DD).\n"
+        "  note 는 그 뉴스가 오늘 이 시장에 어떤 영향을 줬는지 한국어 한 문장(40~70자).\n"
+        "  실제로 열어보지 않은 자료를 지어내지 마라. 없으면 빈 배열."
+    )
+    final = _stream_final(
+        client,
+        model=CLAUDE_MODEL,
+        max_tokens=RESEARCH_MAX_TOKENS,
+        thinking={'type': 'adaptive'},
+        output_config={'effort': 'medium',
+                       'format': {'type': 'json_schema', 'schema': OVERVIEW_SCHEMA}},
+        tools=[{'type': 'web_search_20260209', 'name': 'web_search',
+                'max_uses': OVERVIEW_SEARCH_MAX_USES}],
+        messages=[{'role': 'user', 'content': prompt + instr}],
+    )
+    text = ''.join(b.text for b in final.content if b.type == 'text')
+    data = _extract_json(text)
+    if not isinstance(data, dict) or not isinstance(data.get('lines'), list):
+        return None, []
+    lines = [_clean_overview_line(str(x)) for x in data['lines']]
+    macro = []
+    for m in (data.get('macro_sources') or [])[:MACRO_MAX_ITEMS]:
+        if not isinstance(m, dict):
+            continue
+        url = (m.get('url') or '').strip()
+        if not url.startswith('http'):
+            continue                       # URL 없는 항목은 근거가 아니다
+        macro.append({
+            'topic': (m.get('topic') or '').strip()[:24],
+            'title': (m.get('title') or '').strip()[:140],
+            'url':   url[:400],
+            'date':  (m.get('date') or '').strip()[:10],
+            'note':  (m.get('note') or '').strip()[:120],
+        })
+    print(f'  총평 구조화 출력 OK — 매크로 출처 {len(macro)}건')
+    return lines, macro
+
+
+def _finish_overview(lines, final, text):
+    """총평 줄을 정리·검증한다 (구조화·평문 경로 공용)."""
+    lines = [ln for ln in lines
+             if len(ln) >= OVERVIEW_DROP_UNDER and _HANGUL.search(ln)]
+    lines = _split_overview_lines(lines)
+    over = [ln for ln in lines if len(ln) > OVERVIEW_CLIP]
+    if over:
+        print(f'  [WARN] 총평 {len(over)}줄이 {OVERVIEW_CLIP}자 초과 — 잘립니다 '
+              f'(최장 {max(len(ln) for ln in over)}자)')
+    lines = [clip(ln, OVERVIEW_CLIP) for ln in lines][:OVERVIEW_LINES]
+    if not lines:
+        why = _describe_stop(final, text) if final is not None else '내용 없음'
+        print(f'  [WARN] 총평 비어 있음 — {why}')
+        return ['총평을 생성하지 못했습니다.']
+    if len(lines) < OVERVIEW_LINES:
+        print(f'  [WARN] 총평 {len(lines)}줄 (기대 {OVERVIEW_LINES}줄)')
+    return lines
+
+
 def build_overview(client, market, date, idx_ctx, top, bot):
     def brief(rows):
         if not rows:
@@ -803,8 +905,19 @@ def build_overview(client, market, date, idx_ctx, top, bot):
   첫 글자부터 바로 시황 문장으로 시작하라.
 - 전부 한국어로 작성하라. 영어 문장을 섞지 마라(고유명사·지표명은 예외)."""
 
-    # 종목 리서치와 같은 이유로 예산을 넉넉히 준다(웹검색 결과 + thinking 이
-    # 응답 예산을 같이 쓴다). 매크로 원인 확인에는 몇 번의 검색으로 충분하다.
+    # 매크로 원인을 찾느라 이미 웹검색을 하므로, 그때 본 출처를 같이 받아 둔다.
+    # 추가 검색 비용은 없고 뉴스 목록(/news)의 2층 재료가 된다.
+    # 실패하면 지금까지의 평문 경로로 그대로 내려앉는다 — 총평은 리포트 본문이라
+    # 구조화 출력 때문에 통째로 날아가면 안 된다.
+    macro = []
+    try:
+        macro_lines, macro = _overview_structured(client, prompt)
+        if macro_lines:
+            return _finish_overview(macro_lines, None, ''), macro
+        print('  [NOTE] 총평 구조화 출력 실패 — 평문으로 재시도')
+    except Exception as e:
+        print(f'  [NOTE] 총평 구조화 출력 예외({type(e).__name__}) — 평문으로 재시도')
+
     try:
         final = _stream_final(
             client,
@@ -818,26 +931,10 @@ def build_overview(client, market, date, idx_ctx, top, bot):
         )
         text = ''.join(b.text for b in final.content if b.type == 'text')
         lines = [_clean_overview_line(ln) for ln in text.strip().splitlines()]
-        # 제목·구분선 제거 (항목 하한이 55자이므로 20자 미만은 항목이 아니다)
-        # 한글이 없는 줄은 모델의 영어 안내문이다 — 항목이 아니다.
-        lines = [ln for ln in lines
-                 if len(ln) >= OVERVIEW_DROP_UNDER and _HANGUL.search(ln)]
-        # 자르기 전에 문장 단위로 되쪼갠다 — 합쳐 낸 줄을 그냥 자르면 내용이 날아간다
-        lines = _split_overview_lines(lines)
-        over = [ln for ln in lines if len(ln) > OVERVIEW_CLIP]
-        if over:
-            print(f'  [WARN] 총평 {len(over)}줄이 {OVERVIEW_CLIP}자 초과 — 잘립니다 '
-                  f'(최장 {max(len(ln) for ln in over)}자)')
-        lines = [clip(ln, OVERVIEW_CLIP) for ln in lines][:OVERVIEW_LINES]
-        if not lines:
-            print(f'  [WARN] 총평 비어 있음 — {_describe_stop(final, text)}')
-            return ['총평을 생성하지 못했습니다.']
-        if len(lines) < OVERVIEW_LINES:
-            print(f'  [WARN] 총평 {len(lines)}줄 (기대 {OVERVIEW_LINES}줄)')
-        return lines
+        return _finish_overview(lines, final, text), macro
     except Exception as e:
         print(f'  [WARN] 총평 생성 실패: {e}')
-        return ['총평을 생성하지 못했습니다.']
+        return ['총평을 생성하지 못했습니다.'], macro
 
 
 # ── 3단계: HTML 렌더링 (결정론적 템플릿) ────────────────────────────────────────
@@ -1088,6 +1185,64 @@ def render_html(market, date, idx_data, overview, top, bot):
 </body></html>"""
 
 
+# ── 뉴스 목록 저장 (/news) ─────────────────────────────────────────────────────
+# 리뷰 파이프라인은 종목마다 웹검색으로 근거를 찾아 출처·업종·사유분류까지 만들어
+# 놓고, 렌더링이 끝나면 전부 버렸다(저장되는 건 HTML 한 덩어리뿐이었다).
+# 하루 4개 시장 x 20종목이면 60건 안팎의 '가격이 검증한 뉴스'가 매일 사라진 셈이다.
+# 그걸 그대로 남긴다. 새로 긁는 게 아니라 이미 확인한 것을 적어두는 것이라
+# 추가 검색 비용도, 저작권 부담도 없다(제목·링크·한국어 한 줄 요약만).
+#
+# 주요도 점수는 여기서 계산하지 않고 원재료만 저장한다 — 화면을 다듬는 동안
+# 순위 공식을 바꾸려면 매번 다시 생성해야 하기 때문이다. 정렬은 읽는 쪽에서 한다.
+def build_news_payload(market, date, ts, idx_data, top, bot, macro):
+    """뉴스 목록 저장용 구조. 순수 함수라 오프라인에서 검증할 수 있다."""
+    items = []
+    for rows, direction in ((top, 'up'), (bot, 'down')):
+        for r in rows:
+            url = (r.get('source_url') or '').strip()
+            items.append({
+                'code':       str(r.get('code', '')),
+                'name':       clean_name(r.get('name', '')),
+                'ret':        round(float(r.get('ret') or 0), 6),
+                'dir':        direction,
+                'sector':     (r.get('sector') or '').strip(),
+                'catalyst':   r.get('catalyst_type') or '',
+                'individual': bool(r.get('has_individual_issue')),
+                'confidence': r.get('confidence') or 'low',
+                'reason':     (r.get('reason') or '').strip(),
+                'title':      (r.get('source_title') or '').strip(),
+                'url':        url,
+                'date':       (r.get('source_date') or '').strip(),
+                'failed':     bool(r.get('research_failed')),
+            })
+    idx = []
+    for k in IDX_ORDER.get(market, []):
+        d = (idx_data or {}).get(k)
+        if d and d.get('changePct') is not None:
+            idx.append({'key': k, 'name': d.get('name', k),
+                        'pct': round(float(d['changePct']), 4)})
+    return {
+        'market': market, 'base_date': date, 'updated_at': ts,
+        'indices': idx,
+        'items': items,
+        'macro': list(macro or []),
+        'sourced': sum(1 for i in items if i['url']),
+    }
+
+
+def save_news(market, date, payload):
+    try:
+        fb_ref(f'/news/{market}/{date}').set(payload)
+        print(f'[{market}] 뉴스 목록 저장 — /news/{market}/{date} '
+              f'({len(payload["items"])}종목 중 출처 {payload["sourced"]}건, '
+              f'매크로 {len(payload["macro"])}건)')
+        return True
+    except Exception as e:
+        # 리포트는 이미 게시됐다. 뉴스 저장 실패로 실행을 실패시키지 않는다.
+        print(f'[{market}] [WARN] 뉴스 목록 저장 실패: {e}')
+        return False
+
+
 def inject_timestamp(html_doc, ts):
     if '__GEN_TIME__' in html_doc:
         return html_doc.replace('__GEN_TIME__', ts)
@@ -1127,6 +1282,7 @@ def self_test(out_path):
             'has_individual_issue': indiv,
             'sector_issue': sector_issue if i % 3 == 1 else '',
             'source_url': f'https://example.com/news/article-{i}-long-path' if indiv else '',
+            'source_title': f'테스트 기사 제목 {i}' if indiv else '',
             'source_date': '2026-07-27',
             'confidence': ['high', 'medium', 'low'][i % 3],
         })
@@ -1338,6 +1494,35 @@ def self_test(out_path):
     # 양쪽 모두 비어도 죽지 않아야 한다
     render_html('kr', '2026-07-28', idx_data, ['해당 없음.'], [], [])
 
+    # ── build_news_payload(): 뉴스 목록 저장 구조 ─────────────────────────────
+    macro_sample = [{'topic': '금', 'title': 'Gold hits record', 'url': 'https://ex.com/g',
+                     'date': '2026-07-28', 'note': '실질금리 하락에 금 현물이 4% 올랐다.'}]
+    np = build_news_payload('kr', '2026-07-28', '2026-07-28 16:30', idx_data,
+                            top, bot, macro_sample)
+    assert np['market'] == 'kr' and np['base_date'] == '2026-07-28'
+    assert len(np['items']) == 20, f'항목 수 이상: {len(np["items"])}'
+    assert [i['dir'] for i in np['items']].count('up') == 10, '상승 방향 표기 이상'
+    assert [i['dir'] for i in np['items']].count('down') == 10, '하락 방향 표기 이상'
+    # 개별 재료 종목(i%3==0, 상승·하락 각 4개)만 출처를 가진다
+    assert np['sourced'] == 8, f'출처 건수 이상: {np["sourced"]}'
+    first = np['items'][0]
+    for k in ('code', 'name', 'ret', 'dir', 'sector', 'catalyst', 'individual',
+              'confidence', 'reason', 'title', 'url', 'date', 'failed'):
+        assert k in first, f'항목 필드 누락: {k}'
+    assert first['title'] == '테스트 기사 제목 0', '기사 제목 미저장'
+    assert np['indices'] and np['indices'][0]['key'] == 'kospi', '지수 스냅샷 이상'
+    assert np['macro'] == macro_sample, '매크로 출처 미저장'
+    # 종목명은 리포트와 같은 규칙으로 정리돼야 한다
+    us_np = build_news_payload('us', '2026-07-28', 'ts', idx_data,
+                               [dict(top[0], name='Shopify Inc. Class A Subordinate Voting Shares')],
+                               [], [])
+    assert us_np['items'][0]['name'] == 'Shopify Inc', \
+        f'종목명 정리 안 됨: {us_np["items"][0]["name"]}'
+    # 빈 입력에서도 죽지 않는다
+    empty = build_news_payload('cn', '2026-07-28', 'ts', None, [], [], None)
+    assert empty['items'] == [] and empty['macro'] == [] and empty['sourced'] == 0
+    assert empty['indices'] == [], '지수 없을 때 처리 이상'
+
     # ── get_top_bottom: 부호 기준 분리 + 가변 개수 ────────────────────────────
     st = [{'c': 'A', 'n': 'a', 'm': 1}, {'c': 'B', 'n': 'b', 'm': 1},
           {'c': 'C', 'n': 'c', 'm': 1}, {'c': 'D', 'n': 'd', 'm': 1}]
@@ -1476,9 +1661,11 @@ def main():
         print(f'[{market}] 회사 소개 캐시 {saved}건 갱신')
 
     print(f'[{market}] 2단계 — 총평 생성...')
-    overview = build_overview(client, market, date, idx_ctx, top_r, bot_r)
+    overview, macro = build_overview(client, market, date, idx_ctx, top_r, bot_r)
     for line in overview:
         print(f'  • {line}')
+    for m in macro:
+        print(f'  [매크로] {m["topic"]}: {m["title"][:60]}')
 
     print(f'[{market}] 3단계 — HTML 렌더링...')
     ts = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
@@ -1491,6 +1678,10 @@ def main():
     fb_ref(f'/reviews_history/{market}/{date}').set(payload)  # 날짜별 아카이브
     print(f'[{market}] 완료! (게시: {ts}  ·  기준일 {date}  ·  '
           f'재료확인 {len(results) - unknown}/{len(results)}  ·  {len(html_doc):,} bytes)')
+
+    # 리포트 게시 뒤에 저장한다 — 뉴스 저장이 실패해도 리포트는 이미 올라가 있다.
+    save_news(market, date,
+              build_news_payload(market, date, ts, idx_data, top_r, bot_r, macro))
 
 
 if __name__ == '__main__':
