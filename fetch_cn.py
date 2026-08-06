@@ -96,13 +96,15 @@ SEED_NEW_LISTINGS = [
 t0 = time.time()
 
 
-# ── A+H 자동 감지 ──────────────────────────────────────────────────────────────
+# ── 이중상장 자동 감지 (A주만 남기고 B주·H주 제거) ────────────────────────────
 # DUAL_AH 표는 손으로 채우는 방식이라 계속 뒤처진다. 2026-08-06 전수 점검에서
 # 표에 없는 이중상장 19쌍이 남아 있었다(CNOOC 600938/0883, 립쉰정밀 002475/2475,
 # 헝루이 600276/1276, 하이얼스마트홈 600690/6690, VGT 300476/2476 …).
 # 대부분 2026년에 몰린 A주 기업의 홍콩 2차 상장이다. CNOOC 는 시총 1위권에서
 # 두 자리를 차지했고, 등락률은 두 시장이 따로 움직이니 무버 TOP10 에도 같은
 # 회사가 각각 들어올 수 있었다.
+# B주도 같은 문제다 — BOE(000725.SZ + 200725.SZ)처럼 둘 다 본토 상장이라
+# '본토↔홍콩' 규칙만으로는 안 걸러졌다.
 #
 # 판정 키는 회사 website 다. 약칭(shortName)으로 맞추면 19쌍 중 5쌍만 잡힌다
 # — Yahoo 가 A주·H주에 다른 약칭을 주는 경우가 많다('CNOOC LIMITED' vs 'CNOOC').
@@ -112,6 +114,25 @@ t0 = time.time()
 def safe_key(code):
     """Firebase 키에 쓸 수 없는 문자 치환 (300476.SZ → 300476_SZ)"""
     return re.sub(r'[.#$\[\]/]', '_', str(code))
+
+
+# B주 코드 규칙 — 선전 B주는 200/201xxx(.SZ), 상하이 B주는 900xxx(.SS).
+# BOE(京东方)처럼 A주와 B주가 같은 회사인데 둘 다 본토 상장이어서, '본토↔홍콩만
+# 병합' 규칙으로는 걸러지지 않았다(2026-08-06 실측: 000725.SZ + 200725.SZ 보류).
+B_SHARE_RE = re.compile(r'^(?:200|201)\d{3}\.SZ$|^900\d{3}\.SS$')
+
+
+def listing_kind(sym):
+    """상장 종류 — 'a'(본토 주력) / 'b'(본토 B주) / 'h'(홍콩).
+
+    A주를 남기고 B주·H주를 제거한다. A주가 거래가 가장 활발하고 시총도 현지통화
+    기준이라 정렬에 쓰기 적합하다.
+    """
+    if sym.endswith('.HK'):
+        return 'h'
+    if B_SHARE_RE.match(sym):
+        return 'b'
+    return 'a'
 
 
 def identity_domain(url):
@@ -183,11 +204,12 @@ def save_identity(fresh):
 
 
 def dedupe_by_identity(stocks, ident):
-    """website 가 같은 '본토 1 + 홍콩 1' 쌍에서 홍콩(H주)을 제거한다.
+    """website 가 같은 종목들에서 A주만 남기고 B주·H주를 제거한다.
 
-    보수적으로 판정한다 — 한 도메인에 3종목 이상 묶이거나 본토끼리·홍콩끼리
-    묶이면 병합하지 않고 로그만 남긴다. 모회사와 자회사가 같은 도메인을 쓰는
-    경우까지 자동으로 지워버리면 조용히 종목이 사라진다.
+    A주 1개 + (B주/H주) 1~2개일 때만 병합한다. A주가 없거나 2개 이상이면
+    어느 쪽이 주력인지 알 수 없으므로 병합하지 않고 로그만 남긴다.
+    같은 도메인에 관계없는 상장사가 여럿 걸릴 수 있으므로(모회사·자회사)
+    조용히 종목을 지우기보다 보류하는 쪽을 택했다.
 
     반환: (남은 stocks, 병합한 쌍, 판단 보류한 그룹)
     """
@@ -201,17 +223,23 @@ def dedupe_by_identity(stocks, ident):
     for dom, syms in sorted(groups.items()):
         if len(syms) < 2:
             continue
-        hk = [s for s in syms if s.endswith('.HK')]
-        cn = [s for s in syms if not s.endswith('.HK')]
-        if len(syms) != 2 or len(hk) != 1 or len(cn) != 1:
+        kinds = {}
+        for s in syms:
+            kinds.setdefault(listing_kind(s), []).append(s)
+        primary   = kinds.get('a', [])
+        secondary = kinds.get('b', []) + kinds.get('h', [])
+        # A주 1개 + 부속 1~2개(B주·H주)만 자동 병합한다.
+        if len(primary) != 1 or not secondary or len(secondary) > 2 \
+                or len(primary) + len(secondary) != len(syms):
             skipped.append((dom, sorted(syms)))
             continue
-        a, h = cn[0], hk[0]
-        if (a.split('.')[0], h.split('.')[0]) in NEVER_MERGE:
-            print(f'  [A+H 예외] {dom}: NEVER_MERGE 지정 — {a} / {h} 둘 다 유지')
-            continue
-        drop.add(h)
-        merged.append((a, h, dom))
+        a = primary[0]
+        for s in sorted(secondary):
+            if (a.split('.')[0], s.split('.')[0]) in NEVER_MERGE:
+                print(f'  [중복 예외] {dom}: NEVER_MERGE 지정 — {a} / {s} 둘 다 유지')
+                continue
+            drop.add(s)
+            merged.append((a, s, dom))
     return [s for s in stocks if s[0] not in drop], merged, skipped
 
 
@@ -280,12 +308,14 @@ if _todo:
         print(f'  [NOTE] {len(_todo) - len(_fresh)}종목 조회 실패 — '
               f'다음 실행에서 다시 시도합니다(그 사이 중복이 남을 수 있음).')
 
+_KIND_LABEL = {'b': 'B주', 'h': 'H주'}
 _before = len(stocks)
 stocks, _merged, _skipped = dedupe_by_identity(stocks, identity)
-for a, h, dom in _merged:
-    print(f'  [A+H 자동] {h} 제거 ← {a} 와 동일 회사 ({dom})')
+for a, s, dom in _merged:
+    print(f'  [중복 자동] {s}({_KIND_LABEL.get(listing_kind(s), "?")}) 제거 '
+          f'← {a} 와 동일 회사 ({dom})')
 for dom, syms in _skipped:
-    print(f'  [A+H 보류] {dom}: {len(syms)}종목이 묶여 판단 보류 — {", ".join(syms)}')
+    print(f'  [중복 보류] {dom}: {len(syms)}종목이 묶여 판단 보류 — {", ".join(syms)}')
 print(f'  자동 제거 {_before - len(stocks)}종목 → {len(stocks)}종목')
 
 # ── 신규상장 시드 주입 ─────────────────────────────────────────────────────────
