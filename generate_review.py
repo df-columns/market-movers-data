@@ -255,6 +255,10 @@ MCAP_PICK     = 3    # 그 안에서 상승·하락 각 몇 종목
 # 시총 블록 설명 하드 캡. 실측 76자면 2줄, 90자를 넘으면 3줄이 되어 블록이
 # 219px 로 커진다. 리서치 reason 은 REASON_CLIP(62자) 이라 실제로는 안 걸린다.
 MCAP_REASON_CLIP = 76
+# 2면 표 열 너비. 등락 표와 시총 표가 같은 값을 써야 두 표가 한 문서로 보인다.
+# 종목명 열이 좁으면 영문 회사명이 여러 줄로 벌어져 행 높이를 지배한다.
+# 종목코드는 최장이 중국의 '688825.SS'(9자, 6.4pt 모노 ≈ 39px) 이므로 7% 로 충분.
+TBL_WIDTHS = ['7%', '19%', '7%', '67%']
 
 
 def get_mcap_movers(stocks, prices, market, universe=MCAP_UNIVERSE, k=MCAP_PICK):
@@ -896,12 +900,12 @@ SECTOR_DRIVER_CLIP = 260   # 섹터 카드 설명 하드 캡 (프롬프트 지�
 # 브라우저 실측(2026-08-07)으로 잡은 값이다. 1면 남는 자리(최악 입력 / 실데이터):
 #   flow 10.0 / driver 8.8 → -79 / -30   (넘침)
 #   flow  9.6 / driver 8.5 →  -6 /  42   (최악 입력에서 넘침)
-#   flow  9.2 / driver 8.1 →  25 /  70
-#   flow  9.0 / driver 8.0 →  32 /  77
+#   flow  9.2 / driver 8.1 →  25 /  70   (흐름 박스 배경 추가 전)
+#   flow  8.9 / driver 7.9 →  27          (박스 여백·테두리 26px 를 뺀 뒤)
 # 최악 입력은 flow 820자 + driver 260자 x 5장 만재를 뜻한다.
-FLOW_PT        = 9.2
-SECTOR_NAME_PT = 9.4
-DRIVER_PT      = 8.1
+FLOW_PT        = 8.9
+SECTOR_NAME_PT = 9.2
+DRIVER_PT      = 7.9
 DRIVER_LINES   = 3
 
 
@@ -996,6 +1000,18 @@ def _overview_structured(client, prompt):
         "                 수요 변화(관광객 수, 가입자·이용자 수, 출하량),\n"
         "                 환율·금리, 업황 사이클, 경쟁 구도 변화, 지정학.\n"
         "  ★ 같은 업종을 두 번 쓰지 마라. 서로 다른 업종 5개.\n"
+        "  ★ 업종끼리 겹치면 안 된다. 한쪽이 다른 쪽을 포함하거나 같은 종목군을\n"
+        "     가리키면 하나로 합쳐라. 실제로 나왔던 나쁜 예:\n"
+        "       'AI 인프라'(부정) + '반도체'(긍정) — 반도체가 AI 인프라의 일부다.\n"
+        "       'LNG'(긍정) + '에너지'(부정)      — LNG 가 에너지의 일부다.\n"
+        "     읽는 사람은 같은 것을 두고 정반대로 말한다고 받아들인다.\n"
+        "     합칠 수 없으면 둘 중 오늘 더 크게 움직인 쪽만 남기고 하나를 버려라.\n"
+        "     업종명은 '반도체', '정유', '은행'처럼 같은 층위의 산업 구분으로 쓰고\n"
+        "     'AI 인프라' 같은 테마명과 섞지 마라.\n"
+        "  ★ 방향이 반대인 두 업종을 같이 실을 거면, 같은 재료가 왜 한쪽엔 호재이고\n"
+        "     다른 쪽엔 악재인지를 driver 에 반드시 밝혀라. 그 설명을 못 쓰겠으면\n"
+        "     둘 중 하나를 빼라. (좋은 예: 유가 상승 → 정유는 정제마진 개선,\n"
+        "     항공은 연료비 부담. 같은 재료지만 사업 구조가 반대다.)\n"
         "  sector 는 위 자료에 적힌 업종명을 그대로 쓴다(새로 지어내지 마라).\n"
         "  dir 은 그 업종이 전체적으로 올랐으면 \"up\", 내렸으면 \"down\".\n"
         "  driver 는 그 업종을 움직인 요인을 설명하는 한국어 3문장(200~240자).\n"
@@ -1364,7 +1380,7 @@ def render_table(rows, kind, code_header, n_max=10):
             '회사 개요 · 등락 배경']
     # 종목명 열이 좁으면 영문 회사명이 여러 줄로 벌어져 행 높이를 지배한다.
     # 종목코드는 최장이 중국의 '688825.SS'(9자, 6.4pt 모노 ≈ 39px) 이므로 7% 로 충분.
-    widths = ['7%', '19%', '7%', '67%']
+    widths = TBL_WIDTHS
 
     # thead 에 아래 경계를 준다. border-collapse 는 맞닿은 경계를 반씩 나누므로,
     # 헤더에 경계가 없으면 첫 행만 위쪽 0.5px 을 못 받아 다른 행보다 0.5px 낮아진다
@@ -1447,7 +1463,11 @@ def render_flow(flow, overview):
             '<div style="display:flex;gap:6px;margin-bottom:5px">'
             '<span style="color:#94a3b8;flex-shrink:0">•</span>'
             f'<span>{E(line)}</span></div>' for line in overview)
-    return (f'<div style="font-size:{FLOW_PT}pt;line-height:1.85;color:#1e293b;'
+    # 색 배경 박스로 아래 섹터 카드와 갈라 놓는다. 둘 다 글 덩어리라
+    # 흰 바탕에 나란히 두면 어디까지가 총평인지 눈으로 구분되지 않는다.
+    return (f'<div style="background:#f1f6fb;border:1px solid #d9e6f2;'
+            f'border-left:3px solid #1e3a5f;border-radius:6px;padding:11px 14px;'
+            f'font-size:{FLOW_PT}pt;line-height:1.85;color:#1e293b;'
             f'text-align:justify">{body}</div>')
 
 
@@ -1456,21 +1476,28 @@ def render_sector_cards(sectors):
     if not sectors:
         return ('<div style="font-size:7.6pt;color:#94a3b8;padding:8px 0">'
                 '업종 단위로 묶을 만한 재료가 확인되지 않았습니다.</div>')
+    # 긍정 먼저, 부정 나중. 방향이 섞여 있으면 읽는 사람이 매번 부호를 확인해야
+    # 한다. 방향은 avg(수집한 시세)로 정한다 — 모델의 dir 과 실제 등락이 어긋나면
+    # 라벨이 거짓말이 된다.
+    def is_up(s):
+        return (s['avg'] >= 0) if s.get('avg') is not None else (s.get('dir') != 'down')
+
     cards = []
-    for s in sectors:
-        up = s.get('dir') != 'down'
+    for s in sorted(sectors, key=lambda x: not is_up(x)):
+        up = is_up(s)
         color = '#16a34a' if up else '#dc2626'
-        avg = (f'<span style="font-size:9.4pt;font-weight:800;color:{color};'
-               f'font-variant-numeric:tabular-nums">{fmt_ret(s["avg"])}</span>'
-               f'<span style="font-size:6.6pt;color:#94a3b8">'
-               f'{s["n"]}종목 평균</span>' if s.get('avg') is not None else '')
+        # 등락폭은 싣지 않는다 — 업종 평균은 상·하위 20종목만 모수라 정확한
+        # 업종 수익률이 아니고, 여기서 물어야 할 건 '왜'지 '몇 %'가 아니다.
+        badge = (f'<span style="font-size:6.8pt;font-weight:800;color:#fff;'
+                 f'background:{color};border-radius:3px;padding:1.5px 6px">'
+                 f'{"긍정" if up else "부정"}</span>')
         cards.append(
             f'<div style="border:1px solid #e2e8f0;border-left:3px solid {color};'
             f'border-radius:5px;padding:9px 12px;margin-bottom:8px">'
             f'<div style="display:flex;align-items:baseline;gap:7px;margin-bottom:3px">'
             f'<span style="font-size:{SECTOR_NAME_PT}pt;font-weight:800;white-space:nowrap;'
             f'overflow:hidden;text-overflow:ellipsis;min-width:0">'
-            f'{E(s["sector"])}</span>{avg}</div>'
+            f'{E(s["sector"])}</span>{badge}</div>'
             # driver 는 SECTOR_DRIVER_CLIP(260자) 로 이미 잘리지만, 그건 한글
             # 기준 4줄이다. 라틴·숫자가 섞이면 줄 수가 달라지므로 높이는 여기서
             # 못 박는다. 카드 5장이라 한 장이 한 줄만 늘어도 1면이 위험해진다.
@@ -1481,42 +1508,65 @@ def render_sector_cards(sectors):
     return ''.join(cards)
 
 
-def render_mcap_block(mtop, mbot):
-    """2면 하단 — 시총 상위 안에서의 상승·하락. 좌우 2단으로 자리를 아낀다."""
-    def col(rows, up):
-        color = '#16a34a' if up else '#dc2626'
-        title = ('▲ 상승 상위' if up else '▼ 하락 상위')
-        if not rows:
-            items = ('<div style="font-size:7pt;color:#94a3b8;padding:3px 0">'
-                     f'{"오른" if up else "내린"} 종목이 없습니다.</div>')
-        else:
-            # 표와 같은 이유로 높이를 CSS 로 못 박는다 — 이름 1줄, 설명 2줄.
-            # 여기는 반폭 단이라 표보다 먼저 넘친다(실측 2026-08-07: 긴 라틴
-            # 이름에서 2면이 91px 초과, 표 자체는 클램프 덕에 멀쩡했다).
-            # 넘겨야 할 정보는 등락률과 이유지 회사명 뒷부분이 아니다.
-            items = ''.join(
-                f'<div style="margin-bottom:4px">'
-                f'<div style="display:flex;align-items:baseline;gap:5px">'
-                f'<span style="font-size:7.6pt;font-weight:800;color:{color};'
-                f'font-variant-numeric:tabular-nums;flex-shrink:0">'
-                f'{fmt_ret(r["ret"])}</span>'
-                f'<span style="font-size:7.6pt;font-weight:700;white-space:nowrap;'
-                f'overflow:hidden;text-overflow:ellipsis;min-width:0">'
-                f'{E(clean_name(r.get("name", "")))}</span>'
-                f'<span style="font-size:6.2pt;color:#94a3b8;flex-shrink:0">'
-                f'{E(r.get("mcap_str", ""))}</span></div>'
-                f'<div style="font-size:7pt;line-height:1.5;color:#475569;padding-left:2px;'
-                f'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;'
-                f'overflow:hidden;overflow-wrap:anywhere">'
-                f'{E(clip(r.get("reason") or "—", MCAP_REASON_CLIP))}</div></div>'
-                for r in rows)
-        return (f'<div style="flex:1;min-width:0">'
-                f'<div style="font-size:7.4pt;font-weight:800;color:{color};'
-                f'margin-bottom:4px">{title}</div>{items}</div>')
+def render_mcap_block(mtop, mbot, code_header='code'):
+    """2면 하단 — 시총 상위 안에서의 상승·하락.
 
-    return (f'<div style="display:flex;gap:12px;border:1px solid #e2e8f0;'
-            f'border-radius:6px;padding:8px 10px">'
-            f'{col(mtop, True)}{col(mbot, False)}</div>')
+    위 두 표와 같은 부품으로 그린다. 처음엔 좌우 2단 카드로 짰는데 바로 위
+    표들과 열도 활자도 안 맞아 다른 문서를 붙여 놓은 것처럼 보였다. 열 너비·
+    헤더·행 높이를 그대로 쓰고, 시총만 종목명 옆에 회색으로 덧붙인다.
+    """
+    rows = [(r, True) for r in mtop] + [(r, False) for r in mbot]
+    bar = ('background:#1e3a5f;color:#ffffff;font-size:8pt;font-weight:700;'
+           'padding:3px 8px;border-left:4px solid #64748b')
+    title = f'★ 시가총액 상위 {MCAP_UNIVERSE}종목 내 등락'
+
+    if not rows:
+        return (
+            '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden">'
+            f'<div style="{bar}">{title}</div>'
+            '<div style="padding:7px;font-size:7pt;color:#64748b">'
+            '시가총액 상위 종목 중 등락이 확인된 종목이 없습니다.</div></div>')
+
+    head = ['종목코드' if code_header == 'code' else 'Ticker', '종목명', '등락률',
+            '등락 배경']
+    ths = ''.join(
+        f'<th style="width:{w};background:#334155;color:#ffffff;font-size:6.6pt;'
+        f'font-weight:700;padding:2.5px 4px;text-align:center;border:0;'
+        f'border-bottom:1px solid #334155">{E(h)}</th>'
+        for h, w in zip(head, TBL_WIDTHS))
+
+    cell_h = f'{MERGED_MAX_LINES * 1.42:.2f}em'
+    trs = []
+    for i, (r, up) in enumerate(rows):
+        accent = '#16a34a' if up else '#dc2626'
+        bg = '#f8fafc' if i % 2 else '#ffffff'
+        td = ('padding:2.5px 4px;border-bottom:1px solid #e2e8f0;font-size:6.9pt;'
+              f'background:{bg};')
+        mid = td + 'vertical-align:middle;'
+        trs.append(
+            '<tr>'
+            f'<td style="{mid}text-align:center;font-family:Consolas,monospace;'
+            f'font-size:6.4pt;color:#475569">{E(str(r.get("code", "")))}</td>'
+            f'<td style="{mid}font-weight:700;color:#1e293b;line-height:1.3">'
+            f'<div style="display:-webkit-box;-webkit-line-clamp:2;'
+            f'-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere">'
+            f'{E(clean_name(r.get("name", "")))}'
+            f'<span style="font-weight:600;color:#94a3b8;font-size:5.9pt"> '
+            f'{E(r.get("mcap_str", ""))}</span></div></td>'
+            f'<td style="{mid}text-align:right;font-weight:800;color:{accent};'
+            f'white-space:nowrap">{fmt_ret(r.get("ret"))}</td>'
+            f'<td style="{td}vertical-align:top">'
+            f'<div style="min-height:{cell_h};line-height:1.42;overflow-wrap:anywhere;'
+            f'display:-webkit-box;-webkit-line-clamp:{MERGED_MAX_LINES};'
+            f'-webkit-box-orient:vertical;overflow:hidden">'
+            f'{E(clip(r.get("reason") or "—", MCAP_REASON_CLIP))}</div></td>'
+            '</tr>')
+
+    return (
+        '<div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden">'
+        f'<div style="{bar}">{title}</div>'
+        '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
+        f'<thead><tr>{ths}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
 
 
 def render_html(market, date, idx_data, overview, top, bot,
@@ -1592,9 +1642,7 @@ def render_html(market, date, idx_data, overview, top, bot,
   {head(2, '등락 상위 종목')}
   {render_table(top, 'up', code_header)}
   {render_table(bot, 'down', code_header)}
-  <div style="height:4px"></div>
-  {sec(f'시가총액 상위 {MCAP_UNIVERSE}종목 내 등락')}
-  {render_mcap_block(mtop or [], mbot or [])}
+  {render_mcap_block(mtop or [], mbot or [], code_header)}
   <div style="display:flex;justify-content:flex-end;margin-top:4px">{quality}</div>
 </div>
 </body></html>"""
@@ -1762,9 +1810,9 @@ def self_test(out_path):
                      'avg': 0.031 * (1 if i % 2 else -1), 'n': i + 1}
                     for i in range(SECTOR_MAX_ITEMS)],
     }
-    mtop_s = [dict(top[i], reason=f'시총 상위 상승 {i}번 종목의 등락 배경이다. ' * 2)
+    mtop_s = [dict(top[i], reason=f'시총 상위 상승 {i}번 종목의 등락 배경으로, 이러이러한 일이 있었다.')
               for i in range(MCAP_PICK)]
-    mbot_s = [dict(bot[i], reason=f'시총 상위 하락 {i}번 종목의 등락 배경이다. ' * 2)
+    mbot_s = [dict(bot[i], reason=f'시총 상위 하락 {i}번 종목의 등락 배경으로, 이러이러한 일이 있었다.')
               for i in range(MCAP_PICK)]
     doc = render_html('kr', '2026-07-28', idx_data, overview, top, bot,
                       news_arg, mtop_s, mbot_s)
@@ -1795,16 +1843,25 @@ def self_test(out_path):
 
     # ── 2면: 시총 상위 블록 ───────────────────────────────────────────────────
     assert f'시가총액 상위 {MCAP_UNIVERSE}종목 내 등락' in doc, '시총 블록 제목 누락'
-    assert doc.count('▲ 상승 상위') == 1 and doc.count('▼ 하락 상위') == 1, '시총 블록 이상'
     assert '시총 상위 상승 0번' in doc and '시총 상위 하락 0번' in doc, '시총 블록 사유 누락'
+    # 시총 표는 위 등락 표와 같은 부품이어야 한다 — 열 너비·헤더 스타일이 같아야
+    # 두 표가 한 문서로 보인다. 표 3개 x 4열.
+    assert doc.count('<th style') == 12,         f'2면 표가 3개(등락 2 + 시총 1)가 아니다: {doc.count("<th style")}'
+    for w in set(TBL_WIDTHS):
+        want = TBL_WIDTHS.count(w) * 3          # 표 3개
+        assert doc.count(f'width:{w};background:#334155') == want,             f'열 너비 불일치: {w} — {doc.count(f"width:{w};background:#334155")} != {want}'
+    assert doc.count('border-bottom:1px solid #334155') == 12, 'thead 경계 불일치'
+    # 시총 표는 상승 3건이 먼저, 하락 3건이 뒤에 온다
+    order = re.findall(r'시총 상위 (상승|하락) \d번', doc)
+    assert order == ['상승'] * MCAP_PICK + ['하락'] * MCAP_PICK, f'시총 표 정렬 이상: {order}'
     # 시총 블록이 비어도 죽지 않는다
-    assert '오른 종목이 없습니다' in render_html('kr', '2026-07-28', idx_data,
-                                                overview, top, bot, news_arg, [], mbot_s)
+    assert '등락이 확인된 종목이 없습니다' in render_html(
+        'kr', '2026-07-28', idx_data, overview, top, bot, news_arg, [], [])
     assert '테스트종목0' in doc and '하락종목9' in doc, '행 누락'
     # 회사 소개는 별도 열이 아니라 등락 배경과 같은 칸에 있어야 한다
     # '<th' 로 세면 <thead> 까지 잡히므로 속성까지 붙여 센다
-    assert doc.count('<th style') == 8, \
-        f'열 개수 이상(표 2개 x 4열 기대): {doc.count("<th style")}'
+    assert doc.count('<th style') == 12, \
+        f'열 개수 이상(표 3개 x 4열 기대): {doc.count("<th style")}'
     assert '회사 개요 · 등락 배경' in doc, '합친 열 제목 누락'
     assert '>회사 소개<' not in doc, '회사 소개 열이 아직 분리돼 있음'
     assert doc.count('▲ 상승 TOP 10') == 1 and doc.count('▼ 하락 TOP 10') == 1, '표 제목 이상'
@@ -1815,17 +1872,19 @@ def self_test(out_path):
     assert 'render_footnotes' not in globals(), 'render_footnotes 가 아직 살아 있음'
 
     # ── 행 높이 균일 + 앞 3열 세로 중앙 ────────────────────────────────────────
-    # 합친 칸에 고정 높이 컨테이너가 들어가야 짧은 행도 같은 높이를 차지한다
-    assert doc.count(f'min-height:{MERGED_MAX_LINES * 1.42:.2f}em') == 20, \
-        '합친 칸 고정 높이 컨테이너가 20행에 안 붙었다'
-    # 종목코드/종목명/등락률 = 3열 x 20행
-    assert doc.count('vertical-align:middle') == 60, \
+    # 등락 표 20행 + 시총 표 6행. 시총 표도 같은 행 높이·정렬을 써야
+    # 두 표가 이어진 한 문서로 보인다.
+    ROWS_2P = 20 + 2 * MCAP_PICK
+    got = doc.count(f'min-height:{MERGED_MAX_LINES * 1.42:.2f}em')
+    assert got == ROWS_2P, f'고정 높이 컨테이너 수 이상: {got} != {ROWS_2P}'
+    # 종목코드/종목명/등락률 = 3열 x 전체 행
+    assert doc.count('vertical-align:middle') == 3 * ROWS_2P, \
         f'세로 중앙 정렬 칸 수 이상: {doc.count("vertical-align:middle")}'
-    # 합친 칸만 위 정렬 (20행)
-    assert doc.count('vertical-align:top') == 20, \
-        f'합친 칸 위 정렬 수 이상: {doc.count("vertical-align:top")}'
+    # 마지막 칸만 위 정렬
+    assert doc.count('vertical-align:top') == ROWS_2P, \
+        f'마지막 칸 위 정렬 수 이상: {doc.count("vertical-align:top")}'
     # thead 아래 경계 — 없으면 첫 행이 다른 행보다 0.5px 낮아진다
-    assert doc.count('border-bottom:1px solid #334155') == 8, \
+    assert doc.count('border-bottom:1px solid #334155') == 12, \
         'thead 아래 경계 누락 — 첫 행 높이가 어긋난다'
 
     # ── 총평 ──────────────────────────────────────────────────────────────────
