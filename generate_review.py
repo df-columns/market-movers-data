@@ -242,7 +242,7 @@ def get_top_bottom(stocks, prices, market, n=10):
             'name': s.get('n', ''),
             'ret':  sr,
             'ret5': calc_ret(prices, i, 5),
-            'mcap': s.get('m') or 0,
+            'mcap': mcap_of(s, market),
             'cur':  s.get('cur') or default_cur,
         })
     gainers = sorted([s for s in lst if s['ret'] > 0], key=lambda x: x['ret'], reverse=True)
@@ -274,7 +274,7 @@ def get_mcap_movers(stocks, prices, market, universe=MCAP_UNIVERSE, k=MCAP_PICK)
             'name': s.get('n', ''),
             'ret':  sr,
             'ret5': calc_ret(prices, i, 5),
-            'mcap': s.get('m') or 0,
+            'mcap': mcap_of(s, market),
             'cur':  s.get('cur') or default_cur,
         })
     big = sorted(lst, key=lambda x: x['mcap'], reverse=True)[:universe]
@@ -296,6 +296,17 @@ def fmt_idx_val(v):
     if v >= 1000:
         return f'{v:,.2f}'
     return f'{v:.2f}'
+
+
+# 시가총액 저장 단위가 시장마다 다르다. 국내편은 네이버 시세표의 '시가총액'
+# 열을 그대로 담아 억원 단위이고(fetch_kr.py 의 nums[4]), 나머지는 yfinance 의
+# 원화/달러/엔/위안 단위 그대로다. 읽는 쪽에서 원 단위로 맞춘다.
+# 이 환산이 없으면 삼성전자 시총이 '0억원'으로 찍힌다(2026-08-07 실측).
+MCAP_UNIT = {'kr': 1e8}
+
+
+def mcap_of(stock, market):
+    return (stock.get('m') or 0) * MCAP_UNIT.get(market, 1)
 
 
 def fmt_mcap(m, cur):
@@ -879,6 +890,18 @@ SECTOR_MAX_ITEMS = 5
 # 820자면 1면에 38px 여유가 남는다.
 FLOW_MAX_CHARS   = 820
 SECTOR_DRIVER_CLIP = 260   # 섹터 카드 설명 하드 캡 (프롬프트 지시는 140~220자)
+# 1면 활자 크기. 2면은 표 20행을 밀어 넣느라 6.9pt 지만 1면은 읽는 글이고 자리도
+# 남는다 — 8.6pt 로 짜니 실제 데이터에서 아래 301px(29%)이 비었다.
+# 브라우저 실측(2026-08-07)으로 잡은 값이다. 1면 남는 자리(최악 입력 / 실데이터):
+#   flow 10.0 / driver 8.8 → -79 / -30   (넘침)
+#   flow  9.6 / driver 8.5 →  -6 /  42   (최악 입력에서 넘침)
+#   flow  9.2 / driver 8.1 →  25 /  70
+#   flow  9.0 / driver 8.0 →  32 /  77
+# 최악 입력은 flow 820자 + driver 260자 x 5장 만재를 뜻한다.
+FLOW_PT        = 9.2
+SECTOR_NAME_PT = 9.4
+DRIVER_PT      = 8.1
+DRIVER_LINES   = 3
 
 
 def _norm_title(s):
@@ -1412,14 +1435,14 @@ def render_flow(flow, overview):
     총평은 리포트 본문이라 어느 쪽이든 빈칸으로 두지 않는다.
     """
     if flow:
-        body = ''.join(f'<p style="margin:0 0 6px">{E(p)}</p>'
+        body = ''.join(f'<p style="margin:0 0 9px">{E(p)}</p>'
                        for p in flow.split('\n\n') if p.strip())
     else:
         body = ''.join(
-            '<div style="display:flex;gap:5px;margin-bottom:3px">'
+            '<div style="display:flex;gap:6px;margin-bottom:5px">'
             '<span style="color:#94a3b8;flex-shrink:0">•</span>'
             f'<span>{E(line)}</span></div>' for line in overview)
-    return (f'<div style="font-size:8.6pt;line-height:1.72;color:#1e293b;'
+    return (f'<div style="font-size:{FLOW_PT}pt;line-height:1.85;color:#1e293b;'
             f'text-align:justify">{body}</div>')
 
 
@@ -1438,16 +1461,16 @@ def render_sector_cards(sectors):
                f'{s["n"]}종목 평균</span>' if s.get('avg') is not None else '')
         cards.append(
             f'<div style="border:1px solid #e2e8f0;border-left:3px solid {color};'
-            f'border-radius:5px;padding:7px 10px;margin-bottom:6px">'
+            f'border-radius:5px;padding:9px 12px;margin-bottom:8px">'
             f'<div style="display:flex;align-items:baseline;gap:7px;margin-bottom:3px">'
-            f'<span style="font-size:9pt;font-weight:800;white-space:nowrap;'
+            f'<span style="font-size:{SECTOR_NAME_PT}pt;font-weight:800;white-space:nowrap;'
             f'overflow:hidden;text-overflow:ellipsis;min-width:0">'
             f'{E(s["sector"])}</span>{avg}</div>'
             # driver 는 SECTOR_DRIVER_CLIP(260자) 로 이미 잘리지만, 그건 한글
             # 기준 4줄이다. 라틴·숫자가 섞이면 줄 수가 달라지므로 높이는 여기서
             # 못 박는다. 카드 5장이라 한 장이 한 줄만 늘어도 1면이 위험해진다.
-            f'<div style="font-size:7.9pt;line-height:1.62;color:#334155;'
-            f'text-align:justify;display:-webkit-box;-webkit-line-clamp:4;'
+            f'<div style="font-size:{DRIVER_PT}pt;line-height:1.74;color:#334155;'
+            f'text-align:justify;display:-webkit-box;-webkit-line-clamp:{DRIVER_LINES};'
             f'-webkit-box-orient:vertical;overflow:hidden">'
             f'{E(s["driver"])}</div></div>')
     return ''.join(cards)
@@ -1970,6 +1993,16 @@ def self_test(out_path):
     assert md[0]['code'] == '000029', f'하락 정렬 이상: {md[0]}'
     # 시총이 없는 종목은 대상에서 뺀다 — 순위를 매길 수 없다
     assert get_mcap_movers([{'c': 'X', 'n': 'x', 'm': 0}], [[110.0], [100.0]], 'kr') == ([], [])
+
+    # ── 시가총액 단위 ─────────────────────────────────────────────────────────
+    # 국내편만 억원 단위로 저장된다. 환산이 빠지면 삼성전자가 '시총 0억원'이 된다.
+    assert mcap_of({'m': 13592598}, 'kr') == 13592598 * 1e8, '국내 시총 환산 누락'
+    assert mcap_of({'m': 5299558000000}, 'us') == 5299558000000, '미국 시총을 환산했다'
+    assert mcap_of({}, 'kr') == 0 and mcap_of({'m': None}, 'jp') == 0
+    assert fmt_mcap(mcap_of({'m': 13592598}, 'kr'), 'KRW') == '시총 1359.3조원',         f"국내 시총 표기 오류: {fmt_mcap(mcap_of({'m': 13592598}, 'kr'), 'KRW')}"
+    # get_mcap_movers 도 같은 환산을 거쳐야 한다
+    mu2, _ = get_mcap_movers([{'c': 'A', 'n': 'a', 'm': 13592598}], [[110.0], [100.0]], 'kr')
+    assert mu2[0]['mcap'] == 13592598 * 1e8, '시총 무버에 단위 환산이 안 걸렸다'
 
     # ── build_news_payload(): 뉴스 목록 저장 구조 ─────────────────────────────
     macro_sample = [{'topic': '금', 'title': 'Gold hits record', 'url': 'https://ex.com/g',
