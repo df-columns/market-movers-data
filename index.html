@@ -181,6 +181,12 @@ table{min-width:660px}
    z-index 를 낮게 둬서, 여기서 '📅 아카이브' 를 누르면 모달이 위로 올라온다. */
 #rv-full{display:none;position:fixed;inset:0;z-index:9050;background:#e2e8f0;flex-direction:column}
 #rv-full.show{display:flex}
+/* 뷰어가 떠 있는 동안 뒤 대시보드의 스크롤을 잠근다. 안 잠그면 화면 오른쪽에
+   스크롤바가 두 줄 생기고(대시보드 것 + 리포트 것) 휠이 어느 쪽을 움직이는지
+   알 수 없다. overflow:hidden 은 스크롤 위치를 잃지 않아 닫으면 그대로 돌아온다.
+   body 에만 걸면 이 페이지에서는 뷰포트로 전파되지 않아 그대로 스크롤됐다
+   (실측: window.scrollTo(0,800) 이 먹었다). html 에도 같이 건다. */
+html.rv-locked, body.rv-locked{overflow:hidden}
 #rv-full-bar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#fff;border-bottom:1px solid #e2e8f0;flex-shrink:0;flex-wrap:wrap}
 #rv-full-title{font-size:14px;font-weight:800;color:#0f172a;white-space:nowrap}
 #rv-full-meta{font-size:12px;color:#64748b}
@@ -2066,6 +2072,8 @@ function showReviewFull(html, meta) {
   const frame = document.getElementById('rv-full-iframe');
   const stage = document.getElementById('rv-full-stage');
   box.classList.add('show');
+  document.body.classList.add('rv-locked');
+  document.documentElement.classList.add('rv-locked');
   document.getElementById('rv-full-title').textContent =
     `📰 시장 리뷰 · ${MARKET_LABEL[currentTab] || currentTab}`;
   document.getElementById('rv-full-meta').textContent = meta || '';
@@ -2124,6 +2132,8 @@ async function openReviewFull() {
 
 function closeReviewFull() {
   document.getElementById('rv-full').classList.remove('show');
+  document.body.classList.remove('rv-locked');
+  document.documentElement.classList.remove('rv-locked');
   document.getElementById('rv-full-iframe').srcdoc = '';
   rvFullHtml = null;
 }
