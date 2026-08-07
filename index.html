@@ -425,7 +425,10 @@ html.rv-locked, body.rv-locked{overflow:hidden}
   </div>
   <div id="rv-full-stage">
     <div id="rv-full-fit">
-      <iframe id="rv-full-iframe" sandbox="allow-same-origin allow-scripts allow-modals allow-popups"></iframe>
+      <!-- scrolling="no": 리포트 문서 자체는 스크롤하지 않는다. 스크롤은 바깥
+           #rv-full-stage 하나뿐이어야 한다. JS 쪽에서도 overflow 를 잠근다. -->
+      <iframe id="rv-full-iframe" scrolling="no"
+              sandbox="allow-same-origin allow-scripts allow-modals allow-popups"></iframe>
     </div>
   </div>
   <div id="rv-full-empty">
@@ -1988,8 +1991,23 @@ function rvFullLayout() {
 
   let w = RV_PAGE_W, h = RV_PAGE_H;
   try {                                          // srcdoc 은 동일 출처라 측정 가능
-    const de = frame.contentDocument && frame.contentDocument.documentElement;
-    if (de && de.scrollWidth > 100) { w = de.scrollWidth; h = de.scrollHeight; }
+    const d  = frame.contentDocument;
+    const de = d && d.documentElement;
+    if (de) {
+      // 재기 전에 리포트 문서의 스크롤을 잠근다. 순서가 중요하다 —
+      // 스크롤바가 떠 있는 채로 재면 그 15px 만큼 안쪽 폭이 줄어
+      // .page(210mm=794px)가 가로로 넘치고, 그 상태가 그대로 굳는다.
+      // 크롬 오버레이 스크롤바(헤드리스)에서는 폭이 0이라 안 보이지만
+      // 윈도우 실제 크롬에서는 리포트 오른쪽에 스크롤바가 하나 더 생긴다.
+      // overflow:hidden 이어도 scrollWidth/scrollHeight 는 전체 크기를
+      // 그대로 알려주므로 측정에는 영향이 없다.
+      de.style.overflow = 'hidden';
+      if (d.body) d.body.style.overflow = 'hidden';
+      if (de.scrollWidth > 100) {
+        w = Math.max(de.scrollWidth, d.body ? d.body.scrollWidth : 0);
+        h = Math.max(de.scrollHeight, d.body ? d.body.scrollHeight : 0);
+      }
+    }
   } catch (e) { /* 측정 실패 시 A4 기본값 */ }
 
   frame.style.width  = w + 'px';
@@ -2091,6 +2109,11 @@ function showReviewFull(html, meta) {
       // 기본 배율은 맞춤보다 크므로 세로 스크롤이 생긴다. 리포트 머리부터 보여준다.
       stage.scrollTop = 0;
       stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
+      // 폰트가 늦게 뜨면 높이가 달라진다. 그때 다시 재지 않으면 iframe 이
+      // 실제 내용보다 짧게 남아 아래가 잘린다(스크롤을 잠가 뒀으므로).
+      const relayout = () => { rvFullLayout(); };
+      requestAnimationFrame(relayout);
+      try { frame.contentDocument.fonts.ready.then(relayout); } catch (e) { /* 무시 */ }
     };
     frame.srcdoc = html;
     rvFullLayout();                              // 기본값으로 먼저 자리를 잡아둔다
