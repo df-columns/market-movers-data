@@ -76,7 +76,15 @@ REASON_MAX_CHARS  = 58     # 등락 배경 목표 상한(프롬프트용)
 # 프롬프트 한도보다 여유를 두었으므로 평소에는 걸리지 않는다.
 PROFILE_CLIP = 40
 REASON_CLIP  = 62
-NAME_CLIP    = 40          # 종목명 열 하드 캡 (아래 NAME_NOISE 로 꼬리표를 떼고 나서)
+# 종목명 열 하드 캡 (아래 NAME_NOISE 로 꼬리표를 떼고 나서).
+# 2면 높이를 결정하는 게 이 값이다 — 이름이 길면 열에서 줄바꿈돼 20행이 다 커진다.
+# 단위는 글자 수가 아니라 '표시 폭'이다. 한글·한자·가나는 라틴 문자의 두 배
+# 폭이라 같은 글자 수라도 줄 수가 달라진다. 글자 수로 자르면 한글에 맞춘 캡이
+# 'Space Exploration Technologies Corp'(35자, 라틴) 같은 정상적인 이름까지
+# 잘라먹는다.
+# 브라우저 실측(2026-08-07, 최악 입력 = 전 20행 만재): 한글 34자(=68폭) 에서
+# 2면이 190px 넘치고, 26자(=52폭) 면 50px 남는다. 이름 칸의 2줄 예산이 52폭이다.
+NAME_WIDTH_CLIP = 52
 
 # 시황 총평 줄 수. 개별 종목 배경보다 시장 전체 흐름을 두껍게 싣는다.
 # 출처 목록(약 90px)을 뺀 자리를 여기에 돌렸다.
@@ -240,6 +248,39 @@ def get_top_bottom(stocks, prices, market, n=10):
     gainers = sorted([s for s in lst if s['ret'] > 0], key=lambda x: x['ret'], reverse=True)
     losers  = sorted([s for s in lst if s['ret'] < 0], key=lambda x: x['ret'])
     return gainers[:n], losers[:n]
+
+
+MCAP_UNIVERSE = 30   # 시총 상위 몇 종목 안에서 볼 것인가
+MCAP_PICK     = 3    # 그 안에서 상승·하락 각 몇 종목
+# 시총 블록 설명 하드 캡. 실측 76자면 2줄, 90자를 넘으면 3줄이 되어 블록이
+# 219px 로 커진다. 리서치 reason 은 REASON_CLIP(62자) 이라 실제로는 안 걸린다.
+MCAP_REASON_CLIP = 76
+
+
+def get_mcap_movers(stocks, prices, market, universe=MCAP_UNIVERSE, k=MCAP_PICK):
+    """시총 상위 종목 안에서의 상승·하락 상위.
+
+    전체 등락 상위(get_top_bottom)는 소형주가 휩쓸기 쉬워서 지수를 실제로
+    움직인 게 무엇인지는 안 보인다. 시총 상위만 따로 떼어 그걸 보완한다.
+    """
+    default_cur = DEFAULT_CUR.get(market, '')
+    lst = []
+    for i, s in enumerate(stocks):
+        sr = calc_ret(prices, i, 1)
+        if sr is None or not (s.get('m') or 0):
+            continue
+        lst.append({
+            'code': s.get('c', ''),
+            'name': s.get('n', ''),
+            'ret':  sr,
+            'ret5': calc_ret(prices, i, 5),
+            'mcap': s.get('m') or 0,
+            'cur':  s.get('cur') or default_cur,
+        })
+    big = sorted(lst, key=lambda x: x['mcap'], reverse=True)[:universe]
+    up   = sorted([s for s in big if s['ret'] > 0], key=lambda x: x['ret'], reverse=True)
+    down = sorted([s for s in big if s['ret'] < 0], key=lambda x: x['ret'])
+    return up[:k], down[:k]
 
 
 def fmt_ret(ret):
@@ -834,7 +875,10 @@ OVERVIEW_SCHEMA = {
 # 6건을 받으면 화면에 2~3건만 남았다. 화면 목표 5건을 채우려면 넉넉히 받아야 한다.
 MACRO_MAX_ITEMS  = 9
 SECTOR_MAX_ITEMS = 5
-FLOW_MAX_CHARS   = 900
+# 1면 흐름 본문 하드 캡. 실측(최악 입력, 섹터 driver 260자 x 5장 동반)에서
+# 820자면 1면에 38px 여유가 남는다.
+FLOW_MAX_CHARS   = 820
+SECTOR_DRIVER_CLIP = 260   # 섹터 카드 설명 하드 캡 (프롬프트 지시는 140~220자)
 
 
 def _norm_title(s):
@@ -1017,7 +1061,7 @@ def _clean_sectors(value):
         out.append({
             'sector':   sector,
             'dir':      'down' if s.get('dir') == 'down' else 'up',
-            'driver':   clip(driver, 320),
+            'driver':   clip(driver, SECTOR_DRIVER_CLIP),
             'headline': (s.get('headline') or '').strip()[:140],
             'url':      url[:400] if url.startswith('http') else '',
             'date':     (s.get('date') or '').strip()[:10],
@@ -1174,7 +1218,37 @@ def clean_name(name):
     종목명 열만 4~5줄로 밀어 행 높이를 지배한다(NAME_NOISE 주석 참고).
     """
     t = NAME_NOISE.sub('', str(name or '').strip()).strip(' ,.')
-    return clip(t or str(name or ''), NAME_CLIP)
+    return clip_width(t or str(name or ''), NAME_WIDTH_CLIP)
+
+
+# 동아시아 전각 문자 — 표에서 라틴 문자의 두 배 폭을 차지한다.
+_WIDE = re.compile(r'[ᄀ-ᅟ⺀-꓏가-힣豈-﫿'
+                   r'︰-﹏＀-｠￠-￦]')
+
+
+def disp_width(text):
+    """표시 폭. 전각 2, 그 외 1."""
+    t = str(text or '')
+    return len(t) + len(_WIDE.findall(t))
+
+
+def clip_width(text, limit):
+    """표시 폭 기준으로 자른다.
+
+    글자 수로 자르면 안 되는 자리에 쓴다 — 한글 26자와 라틴 26자는 차지하는
+    폭이 두 배 다르다. 한쪽에 맞춘 캡이 다른 쪽을 망가뜨린다.
+    """
+    t = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if disp_width(t) <= limit:
+        return t
+    out, used = [], 0
+    for ch in t:
+        w = 2 if _WIDE.match(ch) else 1
+        if used + w > limit - 1:      # 말줄임표 자리 1
+            break
+        out.append(ch)
+        used += w
+    return ''.join(out).rstrip() + '…'
 
 
 def render_idx_cards(market, idx_data):
@@ -1295,8 +1369,15 @@ def render_table(rows, kind, code_header, n_max=10):
             '<tr>'
             f'<td style="{mid}text-align:center;font-family:Consolas,monospace;font-size:6.4pt;'
             f'color:#475569">{E(str(r["code"]))}</td>'
+            # 종목명은 2줄에서 강제로 끊는다. 글자 수 예산으로 맞추면 문자 폭
+            # 차이 때문에 새기 마련이다 — 실측(2026-08-07) 'Taiwan Semiconductor
+            # Manufacturing Company Limited'(50폭)가 3줄로 벌어져 2면이 190px
+            # 넘쳤다. 한글 26자와 라틴 50자는 같은 '폭'인데도 줄 수가 달랐다.
+            # 높이는 CSS 로 못 박고, clean_name 의 폭 캡은 1차 방어로 남긴다.
             f'<td style="{mid}font-weight:700;color:#1e293b;line-height:1.3">'
-            f'{E(clean_name(r["name"]))}</td>'
+            f'<div style="display:-webkit-box;-webkit-line-clamp:2;'
+            f'-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere">'
+            f'{E(clean_name(r["name"]))}</div></td>'
             f'<td style="{mid}text-align:right;font-weight:800;color:{accent};white-space:nowrap">'
             f'{fmt_ret(r["ret"])}</td>'
             # overflow-wrap:anywhere — 긴 영문 토큰(티커·제품명)이 줄 앞에서
@@ -1324,17 +1405,97 @@ def render_table(rows, kind, code_header, n_max=10):
 #   장치이고, confidence 판정과 실행 로그의 '✓' 표시가 여기에 걸려 있다.
 
 
-def render_html(market, date, idx_data, overview, top, bot):
+def render_flow(flow, overview):
+    """1면 상단 — 오늘 시장이 왜 이렇게 움직였나.
+
+    flow(뉴스용 서술)가 있으면 그걸 쓰고, 실패했으면 총평 6줄로 내려앉는다.
+    총평은 리포트 본문이라 어느 쪽이든 빈칸으로 두지 않는다.
+    """
+    if flow:
+        body = ''.join(f'<p style="margin:0 0 6px">{E(p)}</p>'
+                       for p in flow.split('\n\n') if p.strip())
+    else:
+        body = ''.join(
+            '<div style="display:flex;gap:5px;margin-bottom:3px">'
+            '<span style="color:#94a3b8;flex-shrink:0">•</span>'
+            f'<span>{E(line)}</span></div>' for line in overview)
+    return (f'<div style="font-size:8.6pt;line-height:1.72;color:#1e293b;'
+            f'text-align:justify">{body}</div>')
+
+
+def render_sector_cards(sectors):
+    """1면 하단 — 업종을 움직인 요인. 기사 제목·링크는 싣지 않는다."""
+    if not sectors:
+        return ('<div style="font-size:7.6pt;color:#94a3b8;padding:8px 0">'
+                '업종 단위로 묶을 만한 재료가 확인되지 않았습니다.</div>')
+    cards = []
+    for s in sectors:
+        up = s.get('dir') != 'down'
+        color = '#16a34a' if up else '#dc2626'
+        avg = (f'<span style="font-size:9.4pt;font-weight:800;color:{color};'
+               f'font-variant-numeric:tabular-nums">{fmt_ret(s["avg"])}</span>'
+               f'<span style="font-size:6.6pt;color:#94a3b8">'
+               f'{s["n"]}종목 평균</span>' if s.get('avg') is not None else '')
+        cards.append(
+            f'<div style="border:1px solid #e2e8f0;border-left:3px solid {color};'
+            f'border-radius:5px;padding:7px 10px;margin-bottom:6px">'
+            f'<div style="display:flex;align-items:baseline;gap:7px;margin-bottom:3px">'
+            f'<span style="font-size:9pt;font-weight:800;white-space:nowrap;'
+            f'overflow:hidden;text-overflow:ellipsis;min-width:0">'
+            f'{E(s["sector"])}</span>{avg}</div>'
+            # driver 는 SECTOR_DRIVER_CLIP(260자) 로 이미 잘리지만, 그건 한글
+            # 기준 4줄이다. 라틴·숫자가 섞이면 줄 수가 달라지므로 높이는 여기서
+            # 못 박는다. 카드 5장이라 한 장이 한 줄만 늘어도 1면이 위험해진다.
+            f'<div style="font-size:7.9pt;line-height:1.62;color:#334155;'
+            f'text-align:justify;display:-webkit-box;-webkit-line-clamp:4;'
+            f'-webkit-box-orient:vertical;overflow:hidden">'
+            f'{E(s["driver"])}</div></div>')
+    return ''.join(cards)
+
+
+def render_mcap_block(mtop, mbot):
+    """2면 하단 — 시총 상위 안에서의 상승·하락. 좌우 2단으로 자리를 아낀다."""
+    def col(rows, up):
+        color = '#16a34a' if up else '#dc2626'
+        title = ('▲ 상승 상위' if up else '▼ 하락 상위')
+        if not rows:
+            items = ('<div style="font-size:7pt;color:#94a3b8;padding:3px 0">'
+                     f'{"오른" if up else "내린"} 종목이 없습니다.</div>')
+        else:
+            # 표와 같은 이유로 높이를 CSS 로 못 박는다 — 이름 1줄, 설명 2줄.
+            # 여기는 반폭 단이라 표보다 먼저 넘친다(실측 2026-08-07: 긴 라틴
+            # 이름에서 2면이 91px 초과, 표 자체는 클램프 덕에 멀쩡했다).
+            # 넘겨야 할 정보는 등락률과 이유지 회사명 뒷부분이 아니다.
+            items = ''.join(
+                f'<div style="margin-bottom:4px">'
+                f'<div style="display:flex;align-items:baseline;gap:5px">'
+                f'<span style="font-size:7.6pt;font-weight:800;color:{color};'
+                f'font-variant-numeric:tabular-nums;flex-shrink:0">'
+                f'{fmt_ret(r["ret"])}</span>'
+                f'<span style="font-size:7.6pt;font-weight:700;white-space:nowrap;'
+                f'overflow:hidden;text-overflow:ellipsis;min-width:0">'
+                f'{E(clean_name(r.get("name", "")))}</span>'
+                f'<span style="font-size:6.2pt;color:#94a3b8;flex-shrink:0">'
+                f'{E(r.get("mcap_str", ""))}</span></div>'
+                f'<div style="font-size:7pt;line-height:1.5;color:#475569;padding-left:2px;'
+                f'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;'
+                f'overflow:hidden;overflow-wrap:anywhere">'
+                f'{E(clip(r.get("reason") or "—", MCAP_REASON_CLIP))}</div></div>'
+                for r in rows)
+        return (f'<div style="flex:1;min-width:0">'
+                f'<div style="font-size:7.4pt;font-weight:800;color:{color};'
+                f'margin-bottom:4px">{title}</div>{items}</div>')
+
+    return (f'<div style="display:flex;gap:12px;border:1px solid #e2e8f0;'
+            f'border-radius:6px;padding:8px 10px">'
+            f'{col(mtop, True)}{col(mbot, False)}</div>')
+
+
+def render_html(market, date, idx_data, overview, top, bot,
+                news=None, mtop=None, mbot=None):
     market_name = MARKET_NAME.get(market, market)
     code_header = 'code' if market == 'kr' else 'ticker'
-    tbl_up   = render_table(top, 'up', code_header)
-    tbl_down = render_table(bot, 'down', code_header)
-
-    ov = ''.join(
-        '<div style="display:flex;gap:4px;margin-bottom:2px">'
-        '<span style="color:#94a3b8;flex-shrink:0">•</span>'
-        f'<span>{E(line)}</span></div>'
-        for line in overview)
+    news = news or {}
 
     # 품질 요약('대상 20종목 · 개별 재료 N건 …')은 싣지 않는다 — 읽는 사람에게
     # 쓸모가 없다는 판단. 집계는 실행 로그에 그대로 남는다.
@@ -1343,21 +1504,28 @@ def render_html(market, date, idx_data, overview, top, bot):
     quality = (f'<span style="color:#dc2626;font-size:6pt;font-weight:700">'
                f'등락 배경 확인 실패 {nofetch}종목</span>') if nofetch else ''
 
-    head_block = (
-        f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
-        f'margin-bottom:5px">'
-        f'<span style="font-size:10pt;font-weight:800;color:#1e293b">'
-        f'데일리 마켓 브리핑 · {E(market_name)} 증시</span>'
-        f'<span style="font-size:6.6pt;color:#94a3b8">🕒 __GEN_TIME__ KST</span></div>'
-        f'<div style="font-size:7pt;color:#64748b;margin-bottom:6px">'
-        f'기준일 {E(date)} · 기준 기간 1D · 시장 {E(market_name)}</div>'
-    )
+    def head(page_no, subtitle):
+        return (
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+            f'margin-bottom:5px">'
+            f'<span style="font-size:10pt;font-weight:800;color:#1e293b">'
+            f'데일리 마켓 브리핑 · {E(market_name)} 증시</span>'
+            f'<span style="font-size:6.6pt;color:#94a3b8">🕒 __GEN_TIME__ KST '
+            f'· {page_no}/2</span></div>'
+            f'<div style="font-size:7pt;color:#64748b;margin-bottom:7px">'
+            f'기준일 {E(date)} · 기준 기간 1D · {subtitle}</div>')
 
-    # 레이아웃: A4 세로 한 장 고정.
-    #   여백 10mm → 가용 190 x 277mm. 표 20행이 여기 들어가야 하므로 본문은
-    #   6.9pt / 행 padding 2.5px 로 잡았고, 회사 소개와 등락 배경을 한 칸에
-    #   합쳐 행당 2줄 안에 끝나게 했다. 분량은 clip() 이 결정론적으로 끊는다.
-    #   (예전 구조는 .page 2개 + page-break-after 라서 인쇄 시 2~4장이 됐다)
+    def sec(label):
+        return (f'<div style="font-size:8.4pt;font-weight:800;color:#0f172a;'
+                f'border-bottom:1.4px solid #0f172a;padding-bottom:3px;'
+                f'margin:0 0 7px">{label}</div>')
+
+    # 레이아웃: A4 세로 정확히 2장.
+    #   1면은 읽는 글이라 8.6pt 로 넉넉히, 2면은 표 20행 + 시총 블록이 들어가야
+    #   해서 6.9pt / 행 padding 2.5px 로 눌러 담는다. 분량은 clip() 이
+    #   결정론적으로 끊으므로 모델 출력이 길어져도 페이지 수는 안 늘어난다.
+    #   .page 에 height 를 고정하지 않는다 — 인쇄에서 빈 페이지가 딸려 나온다.
+    #   대신 첫 장에만 break-after 를 걸어 2장으로 확정한다.
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <title>데일리 마켓 브리핑 · {E(market_name)} 증시 · {E(date)}</title>
@@ -1365,7 +1533,7 @@ def render_html(market, date, idx_data, overview, top, bot):
   @page {{ size: A4 portrait; margin: 10mm; }}
   body {{ margin:0; padding:16px 0; background:#e2e8f0;
           font-family:'Noto Sans KR','Malgun Gothic',sans-serif; color:#1e293b; }}
-  .page {{ width:210mm; height:297mm; margin:0 auto; padding:10mm;
+  .page {{ width:210mm; height:297mm; margin:0 auto 16px; padding:10mm;
            background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.15);
            box-sizing:border-box; overflow:hidden; }}
   table {{ width:100%; border-collapse:collapse; table-layout:fixed; }}
@@ -1377,19 +1545,29 @@ def render_html(market, date, idx_data, overview, top, bot):
     /* 인쇄에서는 @page 여백이 자리를 잡으므로 .page 자체 여백을 없앤다.
        height:auto 로 두어야 마지막 빈 페이지가 딸려 나오지 않는다. */
     .page {{ box-shadow:none; margin:0; padding:0; height:auto; overflow:visible; }}
+    .page + .page {{ break-before:page; page-break-before:always; }}
   }}
 </style></head>
 <body>
 <div class="page">
-  {head_block}
-  <div style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;margin-bottom:7px">
+  {head(1, '시장의 흐름과 업종 동향')}
+  <div style="border:1px solid #e2e8f0;border-radius:6px;padding:6px 9px;margin-bottom:9px">
     {render_idx_cards(market, idx_data)}
-    <div style="background:#f8fafc;border-radius:5px;padding:6px 8px;font-size:7pt;
-                line-height:1.48;color:#334155">{ov}</div>
   </div>
-  {tbl_up}
-  {tbl_down}
-  <div style="display:flex;justify-content:flex-end">{quality}</div>
+  {sec('시장의 흐름')}
+  {render_flow(news.get('flow'), overview)}
+  <div style="height:11px"></div>
+  {sec('크게 움직인 섹터')}
+  {render_sector_cards(news.get('sectors') or [])}
+</div>
+<div class="page">
+  {head(2, '등락 상위 종목')}
+  {render_table(top, 'up', code_header)}
+  {render_table(bot, 'down', code_header)}
+  <div style="height:4px"></div>
+  {sec(f'시가총액 상위 {MCAP_UNIVERSE}종목 내 등락')}
+  {render_mcap_block(mtop or [], mbot or [])}
+  <div style="display:flex;justify-content:flex-end;margin-top:4px">{quality}</div>
 </div>
 </body></html>"""
 
@@ -1548,14 +1726,52 @@ def self_test(out_path):
         '규제 완화가 실제 발주로 이어지는지 3분기 장비 수주 공시를 확인해야 한다.',
     ]
     assert len(overview) == OVERVIEW_LINES, '샘플 총평 줄 수가 설정과 다르다'
-    doc = render_html('kr', '2026-07-28', idx_data, overview, top, bot)
+    news_arg = {
+        'flow': ('오늘 시장을 끌어내린 것은 중동 리스크였다. ' * 8 + '\n\n'
+                 + '경로는 단순하다. 유가가 오르면 정유주가 강해진다. ' * 8),
+        'sectors': [{'sector': f'업종{i}', 'dir': 'up' if i % 2 else 'down',
+                     'driver': f'{i}번 업종을 움직인 요인에 대한 설명이다. ' * 4,
+                     'avg': 0.031 * (1 if i % 2 else -1), 'n': i + 1}
+                    for i in range(SECTOR_MAX_ITEMS)],
+    }
+    mtop_s = [dict(top[i], reason=f'시총 상위 상승 {i}번 종목의 등락 배경이다. ' * 2)
+              for i in range(MCAP_PICK)]
+    mbot_s = [dict(bot[i], reason=f'시총 상위 하락 {i}번 종목의 등락 배경이다. ' * 2)
+              for i in range(MCAP_PICK)]
+    doc = render_html('kr', '2026-07-28', idx_data, overview, top, bot,
+                      news_arg, mtop_s, mbot_s)
     doc = inject_timestamp(doc, '2026-07-28 16:30')
 
     assert doc.startswith('<!DOCTYPE html>'), 'DOCTYPE 누락'
     assert doc.rstrip().endswith('</html>'), '</html> 누락'
     assert '__GEN_TIME__' not in doc, '타임스탬프 미치환'
-    assert doc.count('<div class="page">') == 1, 'A4 1장이어야 한다'
+    assert doc.count('<div class="page">') == 2, 'A4 2장이어야 한다'
     assert 'page-break-after' not in doc, '페이지 강제분할 규칙이 남아 있음'
+    # 2장 확정은 .page + .page 규칙 하나로만 한다
+    assert doc.count('page-break-before:always') == 1, '페이지 분할 규칙 이상'
+
+    # ── 1면: 흐름 서술 + 섹터 카드 ────────────────────────────────────────────
+    assert doc.count('>시장의 흐름<') == 1 and doc.count('>크게 움직인 섹터<') == 1, \
+        '1면 섹션 제목 누락'
+    assert doc.count('중동 리스크였다') and doc.count('경로는 단순하다'), '흐름 본문 누락'
+    for i in range(SECTOR_MAX_ITEMS):
+        assert f'>업종{i}<' in doc, f'섹터 카드 누락: 업종{i}'
+    # 1면에 기사 제목·링크는 싣지 않는다
+    assert '<a ' not in doc and 'http' not in doc, '리포트에 링크가 들어갔다'
+
+    # flow 가 없으면 총평 6줄로 내려앉는다 — 1면을 빈칸으로 두지 않는다
+    nof = render_html('kr', '2026-07-28', idx_data, overview, top, bot,
+                      {'flow': '', 'sectors': []}, [], [])
+    assert overview[0][:20] in nof, 'flow 실패 시 총평으로 대체되지 않는다'
+    assert '업종 단위로 묶을 만한 재료' in nof, '섹터 없음 안내 누락'
+
+    # ── 2면: 시총 상위 블록 ───────────────────────────────────────────────────
+    assert f'시가총액 상위 {MCAP_UNIVERSE}종목 내 등락' in doc, '시총 블록 제목 누락'
+    assert doc.count('▲ 상승 상위') == 1 and doc.count('▼ 하락 상위') == 1, '시총 블록 이상'
+    assert '시총 상위 상승 0번' in doc and '시총 상위 하락 0번' in doc, '시총 블록 사유 누락'
+    # 시총 블록이 비어도 죽지 않는다
+    assert '오른 종목이 없습니다' in render_html('kr', '2026-07-28', idx_data,
+                                                overview, top, bot, news_arg, [], mbot_s)
     assert '테스트종목0' in doc and '하락종목9' in doc, '행 누락'
     # 회사 소개는 별도 열이 아니라 등락 배경과 같은 칸에 있어야 한다
     # '<th' 로 세면 <thead> 까지 잡히므로 속성까지 붙여 센다
@@ -1585,8 +1801,9 @@ def self_test(out_path):
         'thead 아래 경계 누락 — 첫 행 높이가 어긋난다'
 
     # ── 총평 ──────────────────────────────────────────────────────────────────
+    # 1면은 flow 서술을 싣는다. 총평 6줄은 flow 가 없을 때의 대체 경로다.
     for line in overview:
-        assert line in doc, f'총평 줄 누락: {line[:20]}'
+        assert line in nof, f'대체 경로에 총평 줄 누락: {line[:20]}'
 
     # 합쳐 낸 줄을 문장 단위로 되쪼갠다 (실측 사례 기반)
     merged = ('실적 서프라이즈가 지수를 밀어올린 전면적 강세장이었다.'
@@ -1681,7 +1898,14 @@ def self_test(out_path):
     ]:
         got = clean_name(raw)
         assert got == want, f'clean_name({raw!r}) -> {got!r}, 기대 {want!r}'
-    assert len(clean_name('X' * 80)) == NAME_CLIP + 1, '종목명 하드 캡 미적용'
+    assert disp_width(clean_name('X' * 80)) == NAME_WIDTH_CLIP, '종목명 하드 캡 미적용'
+    # 캡은 글자 수가 아니라 표시 폭이다 — 한글 캡이 라틴 이름을 잘라선 안 된다
+    assert clean_name('Space Exploration Technologies Corp. Class A Common Stock')         == 'Space Exploration Technologies Corp', '라틴 이름이 잘렸다'
+    assert disp_width('가나다') == 6 and disp_width('abc') == 3, '표시 폭 계산 오류'
+    assert disp_width('가a나b') == 6, '혼합 문자열 폭 계산 오류'
+    long_kr = clean_name('가' * 40)
+    assert disp_width(long_kr) <= NAME_WIDTH_CLIP and long_kr.endswith('…'),         f'한글 이름 폭 캡 실패: {long_kr!r} (폭 {disp_width(long_kr)})'
+    assert clip_width('짧음', 52) == '짧음', '짧은 문자열을 건드렸다'
 
     # 프롬프트 한도를 넘긴 입력도 렌더에서 잘려야 한다
     over = render_table(
@@ -1722,13 +1946,30 @@ def self_test(out_path):
     doc2 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 상승했다.'], top[:3], [])
     assert '▲ 상승 종목 3개 (전 종목)' in doc2, '상승 개수 표기 이상'
     assert '하락한 종목이 없습니다' in doc2, '빈 하락 표 처리 이상'
-    assert doc2.count('<div class="page">') == 1, '빈 표 페이지 이상'
+    assert doc2.count('<div class="page">') == 2, '빈 표 페이지 이상'
     # 반대 방향
     doc3 = render_html('kr', '2026-07-28', idx_data, ['전 종목이 하락했다.'], [], bot[:5])
     assert '▼ 하락 종목 5개 (전 종목)' in doc3, '하락 개수 표기 이상'
     assert '상승한 종목이 없습니다' in doc3, '빈 상승 표 처리 이상'
     # 양쪽 모두 비어도 죽지 않아야 한다
     render_html('kr', '2026-07-28', idx_data, ['해당 없음.'], [], [])
+
+    # ── get_mcap_movers(): 시총 상위 안에서의 등락 ────────────────────────────
+    # 소형주가 등락 상위를 휩쓸어도 시총 상위 종목이 잡혀야 한다.
+    mk_stocks = [{'c': f'{i:06d}', 'n': f'종목{i}', 'm': (100 - i) * 1e12, 'cur': 'KRW'}
+                 for i in range(40)]
+    # 하루치 종가 2행: 시총 하위(i>=30) 종목에 가장 큰 등락을 준다
+    prev = [1000.0] * 40
+    cur = [1000.0 * (1 + (0.5 if i >= 30 else (0.01 * (15 - i)))) for i in range(40)]
+    mk_prices = [cur, prev]      # prices[0] 이 최신
+    mu, md = get_mcap_movers(mk_stocks, mk_prices, 'kr')
+    assert len(mu) == MCAP_PICK and len(md) == MCAP_PICK, f'시총 무버 개수 이상: {mu} {md}'
+    assert all(int(s['code']) < MCAP_UNIVERSE for s in mu + md), \
+        '시총 상위 30 밖 종목이 섞였다'
+    assert [s['code'] for s in mu] == ['000000', '000001', '000002'], f'상승 정렬 이상: {mu}'
+    assert md[0]['code'] == '000029', f'하락 정렬 이상: {md[0]}'
+    # 시총이 없는 종목은 대상에서 뺀다 — 순위를 매길 수 없다
+    assert get_mcap_movers([{'c': 'X', 'n': 'x', 'm': 0}], [[110.0], [100.0]], 'kr') == ([], [])
 
     # ── build_news_payload(): 뉴스 목록 저장 구조 ─────────────────────────────
     macro_sample = [{'topic': '금', 'title': 'Gold hits record', 'url': 'https://ex.com/g',
@@ -1854,7 +2095,7 @@ def self_test(out_path):
 
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(doc)
-    print(f'[self-test] OK — {len(doc):,} bytes, A4 1장, 총평 {OVERVIEW_LINES}줄, '
+    print(f'[self-test] OK — {len(doc):,} bytes, A4 2장, 총평 {OVERVIEW_LINES}줄, '
           f'행 높이 {MERGED_MAX_LINES}줄 고정, 섹터축약 상승 {c_up}건/하락 {c_down}건 '
           f'→ {out_path}')
     print('  ※ 실제 1페이지 여부는 브라우저 인쇄 높이로 확인해야 한다 '
@@ -1922,13 +2163,22 @@ def main():
         print('[ERROR] 유효한 등락 종목이 없습니다.')
         sys.exit(1)
 
+    # 시총 상위 안에서의 등락. 등락 상위 20종목과 겹치는 건 리서치를 다시 하지
+    # 않고 결과를 나눠 쓴다 — 같은 종목을 두 번 검색할 이유가 없다.
+    mtop, mbot = get_mcap_movers(stocks, prices, market)
+    seen = {s['code'] for s in top10 + bot10}
+    extra = [s for s in mtop + mbot if s['code'] not in seen]
+
     enrich(top10, bench)
     enrich(bot10, bench)
-    targets = top10 + bot10
+    enrich(extra, bench)
+    targets = top10 + bot10 + extra
     # 상승/하락 종목이 10개 미만이면 있는 만큼만 다룬다
     print(f'[{market}] 기준일 {date}  |  상승 {len(top10)}종목 / 하락 {len(bot10)}종목'
           f'{"  (10개 미만 — 해당 종목만 처리)" if min(len(top10), len(bot10)) < 10 else ""}'
           f'  |  지수 {idx_ctx}')
+    print(f'[{market}] 시총 상위 {MCAP_UNIVERSE}종목 내 상승 {len(mtop)} / 하락 {len(mbot)} '
+          f'— 이 중 {len(extra)}종목은 새로 리서치')
 
     profiles = load_profiles(market, [s['code'] for s in targets])
     print(f'[{market}] 회사 소개 캐시 적중 {len(profiles)}/{len(targets)}종목')
@@ -1945,7 +2195,14 @@ def main():
             targets))
 
     top_r = results[:len(top10)]
-    bot_r = results[len(top10):]
+    bot_r = results[len(top10):len(top10) + len(bot10)]
+    # 시총 블록은 등락 상위와 겹칠 수 있으므로 코드로 되찾는다.
+    # 사본을 뜨는 이유: 아래 collapse_sector_duplicates 가 top_r/bot_r 의
+    # reason 을 '동일 섹터 이슈'로 줄인다. 시총 블록은 3종목뿐이라 원래 설명을
+    # 그대로 보여주는 편이 낫다.
+    by_code = {r['code']: r for r in results}
+    mtop_r = [dict(by_code[s['code']]) for s in mtop if s['code'] in by_code]
+    mbot_r = [dict(by_code[s['code']]) for s in mbot if s['code'] in by_code]
 
     indiv   = sum(1 for r in results if r['has_individual_issue'])
     unknown = sum(1 for r in results if r['catalyst_type'] == '확인된_뉴스_없음')
@@ -1986,12 +2243,16 @@ def main():
         print(f'  • {line}')
     for m in news['macro']:
         print(f'  [매크로] {m["topic"]}: {m["title"][:60]}')
+    # 업종 등락률은 리포트와 뉴스 화면이 같은 숫자를 써야 한다.
+    news['sectors'] = _attach_sector_moves(news['sectors'], top_r + bot_r)
     for s in news['sectors']:
-        print(f'  [섹터] {s["sector"]}({s["dir"]}): {s["driver"][:60]}')
+        print(f'  [섹터] {s["sector"]}({s["dir"]} {fmt_ret(s["avg"])}): {s["driver"][:56]}')
 
     print(f'[{market}] 3단계 — HTML 렌더링...')
     ts = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
-    html_doc = inject_timestamp(render_html(market, date, idx_data, overview, top_r, bot_r), ts)
+    html_doc = inject_timestamp(
+        render_html(market, date, idx_data, overview, top_r, bot_r,
+                    news, mtop_r, mbot_r), ts)
 
     payload = {'html': html_doc, 'updated_at': ts, 'base_date': date}
 
