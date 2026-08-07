@@ -907,6 +907,8 @@ FLOW_PT        = 8.9
 SECTOR_NAME_PT = 9.2
 DRIVER_PT      = 7.9
 DRIVER_LINES   = 3
+SECTOR_CHIPS        = 4    # 섹터 카드에 함께 적을 종목 수
+SECTOR_CHIP_NAME_W  = 20   # 그 종목명 표시 폭 (전각 2 기준)
 
 
 def _norm_title(s):
@@ -1489,15 +1491,30 @@ def render_sector_cards(sectors):
         # 등락폭은 싣지 않는다 — 업종 평균은 상·하위 20종목만 모수라 정확한
         # 업종 수익률이 아니고, 여기서 물어야 할 건 '왜'지 '몇 %'가 아니다.
         badge = (f'<span style="font-size:6.8pt;font-weight:800;color:#fff;'
-                 f'background:{color};border-radius:3px;padding:1.5px 6px">'
-                 f'{"긍정" if up else "부정"}</span>')
+                 f'background:{color};border-radius:3px;padding:1.5px 6px;'
+                 f'flex-shrink:0">{"긍정" if up else "부정"}</span>')
+        # 해당 종목은 제목 줄 오른쪽에 붙인다. 아래로 한 줄 늘리면 카드 5장이라
+        # 1면이 80px 더 필요해지는데 그만한 자리가 없다. nowrap + ellipsis 로
+        # 두어 몇 개가 오든 높이가 절대 안 늘게 한다.
+        chips = ''
+        if s.get('stocks'):
+            parts = []
+            for st in s['stocks']:
+                c = '#16a34a' if st['ret'] >= 0 else '#dc2626'
+                parts.append(f'{E(st["name"])} <span style="color:{c};font-weight:800;'
+                             f'font-variant-numeric:tabular-nums">'
+                             f'{fmt_ret(st["ret"])}</span>')
+            chips = (f'<span style="flex:1;min-width:0;text-align:right;'
+                     f'font-size:7.2pt;color:#64748b;white-space:nowrap;'
+                     f'overflow:hidden;text-overflow:ellipsis">'
+                     + '<span style="color:#cbd5e1"> · </span>'.join(parts)
+                     + '</span>')
         cards.append(
             f'<div style="border:1px solid #e2e8f0;border-left:3px solid {color};'
             f'border-radius:5px;padding:9px 12px;margin-bottom:8px">'
             f'<div style="display:flex;align-items:baseline;gap:7px;margin-bottom:3px">'
             f'<span style="font-size:{SECTOR_NAME_PT}pt;font-weight:800;white-space:nowrap;'
-            f'overflow:hidden;text-overflow:ellipsis;min-width:0">'
-            f'{E(s["sector"])}</span>{badge}</div>'
+            f'flex-shrink:0">{E(s["sector"])}</span>{badge}{chips}</div>'
             # driver 는 SECTOR_DRIVER_CLIP(260자) 로 이미 잘리지만, 그건 한글
             # 기준 4줄이다. 라틴·숫자가 섞이면 줄 수가 달라지므로 높이는 여기서
             # 못 박는다. 카드 5장이라 한 장이 한 줄만 늘어도 1면이 위험해진다.
@@ -1698,7 +1715,7 @@ def build_news_payload(market, date, ts, idx_data, top, bot, news):
 
 
 def _attach_sector_moves(sectors, items):
-    """섹터 카드에 등락 통계를 붙인다.
+    """섹터 카드에 등락 통계와 해당 종목을 붙인다.
 
     등락률은 모델에게 묻지 않고 수집한 시세에서 직접 계산한다 — 숫자를
     지어낼 여지를 없앤다. 업종명이 자료와 안 맞으면 통계 없이 카드만 남긴다.
@@ -1707,13 +1724,19 @@ def _attach_sector_moves(sectors, items):
     for i in items:
         s = (i.get('sector') or '').strip()
         if s:
-            by_sector.setdefault(s.casefold(), []).append(i['ret'])
+            by_sector.setdefault(s.casefold(), []).append(i)
     out = []
     for s in sectors:
-        rets = by_sector.get(s['sector'].casefold())
+        rows = by_sector.get(s['sector'].casefold()) or []
+        rets = [r['ret'] for r in rows]
+        # 많이 움직인 종목부터. 카드 한 줄에 들어갈 만큼만 싣는다.
+        top = sorted(rows, key=lambda r: abs(r['ret']), reverse=True)[:SECTOR_CHIPS]
         out.append({**s,
                     'avg': round(sum(rets) / len(rets), 4) if rets else None,
-                    'n':   len(rets) if rets else 0})
+                    'n':   len(rets),
+                    'stocks': [{'name': clip_width(clean_name(r.get('name', '')),
+                                                   SECTOR_CHIP_NAME_W),
+                                'ret': round(float(r['ret']), 6)} for r in top]})
     return out
 
 
@@ -2139,6 +2162,22 @@ def self_test(out_path):
         '업종 평균 등락률 계산 오류'
     assert np['sectors'][1]['avg'] is None and np['sectors'][1]['n'] == 0, \
         '자료에 없는 업종엔 통계를 붙이면 안 된다'
+    assert np['sectors'][1]['stocks'] == [], '자료에 없는 업종에 종목이 붙었다'
+
+    # 섹터 카드에 함께 실을 종목 — 많이 움직인 순, 최대 SECTOR_CHIPS 개
+    chips = s0['stocks']
+    assert 0 < len(chips) <= SECTOR_CHIPS, f'종목 수 이상: {len(chips)}'
+    assert [abs(c['ret']) for c in chips] \
+        == sorted((abs(c['ret']) for c in chips), reverse=True), '등락 폭 순 정렬 아님'
+    assert all(disp_width(c['name']) <= SECTOR_CHIP_NAME_W for c in chips), \
+        '종목명 폭 캡 미적용'
+    # 종목명은 표와 같은 규칙으로 정리돼야 한다
+    long_np = build_news_payload(
+        'us', '2026-07-28', 'ts', idx_data,
+        [dict(top[0], name='Shopify Inc. Class A Common Stock')], [],
+        {'sectors': [{'sector': top[0]['sector'], 'dir': 'up', 'driver': '가' * 40}]})
+    assert long_np['sectors'][0]['stocks'][0]['name'] == 'Shopify Inc', \
+        f"종목명 정리 안 됨: {long_np['sectors'][0]['stocks'][0]['name']}"
 
     # _clean_sectors(): 같은 업종 중복·설명 부실 항목은 버린다
     cs = _clean_sectors([{'sector': '반도체', 'dir': 'up', 'driver': '가' * 40,
