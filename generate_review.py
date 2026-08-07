@@ -788,28 +788,49 @@ OVERVIEW_SCHEMA = {
     "type": "object",
     "properties": {
         "lines": {"type": "array", "items": {"type": "string"}},
+        # 뉴스 화면의 '시장의 흐름' 본문. 리포트의 6줄은 A4 자리에 맞춰 눌러 쓴
+        # 것이라 따로 받는다 — 여기는 지면 제약이 없어 이어지는 글로 쓴다.
+        "flow": {"type": "string"},
         "macro_sources": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "topic":   {"type": "string"},   # 금, 유가, 금리, 환율, 고용지표 …
-                    "title":   {"type": "string"},   # 기사 원문 제목
-                    "url":     {"type": "string"},
-                    "date":    {"type": "string"},
-                    "note":    {"type": "string"},   # 한국어 한 줄 — 시장에 준 영향
-                    "summary": {"type": "array", "items": {"type": "string"}},
+                    "topic": {"type": "string"},   # 금, 유가, 금리, 환율, 고용지표 …
+                    "title": {"type": "string"},   # 기사 원문 제목
+                    "url":   {"type": "string"},
+                    "date":  {"type": "string"},
+                    "note":  {"type": "string"},   # 한국어 한 줄 — 시장에 준 영향
                 },
-                "required": ["topic", "title", "url", "date", "note", "summary"],
+                "required": ["topic", "title", "url", "date", "note"],
+                "additionalProperties": False,
+            },
+        },
+        # 섹터 단위 뉴스. 개별 종목 실적이 아니라 '섹터를 움직인 외부 요인'.
+        "sectors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sector":   {"type": "string"},   # 입력 자료의 업종명 그대로
+                    "dir":      {"type": "string", "enum": ["up", "down"]},
+                    "driver":   {"type": "string"},   # 섹터를 움직인 원인 (서술)
+                    "headline": {"type": "string"},
+                    "url":      {"type": "string"},
+                    "date":     {"type": "string"},
+                },
+                "required": ["sector", "dir", "driver", "headline", "url", "date"],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["lines", "macro_sources"],
+    "required": ["lines", "flow", "macro_sources", "sectors"],
     "additionalProperties": False,
 }
 
-MACRO_MAX_ITEMS = 6
+MACRO_MAX_ITEMS  = 6
+SECTOR_MAX_ITEMS = 5
+FLOW_MAX_CHARS   = 900
 
 
 def _norm_title(s):
@@ -850,11 +871,20 @@ def _dedupe_sources(items):
 
 
 def _overview_structured(client, prompt):
-    """총평을 구조화 출력으로 받는다. 실패하면 (None, []) 를 돌려 평문 경로로 넘긴다."""
+    """총평을 구조화 출력으로 받는다. 실패하면 (None, ...) 를 돌려 평문 경로로 넘긴다."""
     instr = (
         f"\n\n━━━ 출력 형식 ━━━\n"
         f"lines: 위 규칙대로 쓴 {OVERVIEW_LINES}개의 문장(문자열 배열). 기호·번호 없이 문장만.\n"
-        f"macro_sources: 오늘 시장의 흐름을 설명해 주는 기사를 최대 {MACRO_MAX_ITEMS}건.\n"
+        "\n"
+        "flow: 같은 내용을 뉴스 화면용으로 다시 쓴 글. lines 는 A4 리포트 자리에\n"
+        f"  맞춰 눌러 쓴 것이라 딱딱하다. 여기는 지면 제약이 없으니 이어지는 글로,\n"
+        f"  {FLOW_MAX_CHARS - 300}~{FLOW_MAX_CHARS}자 정도로 편하게 풀어 써라.\n"
+        "  오늘 시장이 왜 이렇게 움직였는지를 처음부터 끝까지 설명하는 글이다.\n"
+        "  무슨 일이 있었고(사건) → 그게 왜 주가에 영향을 줬고(경로) →\n"
+        "  그래서 어디가 오르고 어디가 빠졌는지(결과) 순으로 이어라.\n"
+        "  줄바꿈(\\n\\n)으로 2~3문단 나눠도 된다. 개조식·불릿 쓰지 말고 문장으로.\n"
+        "\n"
+        f"macro_sources: 오늘 시장의 흐름을 설명해 주는 기사를 {MACRO_MAX_ITEMS}건 내외.\n"
         "  ★ 여기는 '시장 전반' 칸이다. 개별 종목 기사는 넣지 마라.\n"
         "     넣을 것 : 지수·금리·환율·유가 등 시장 전체 / 업종 전반을 움직인 정책·규제 /\n"
         "               수급(외국인·기관 순매수) / 거시 지표.\n"
@@ -875,10 +905,29 @@ def _overview_structured(client, prompt):
         "  topic 은 무엇에 대한 것인지 짧은 명사(금, 유가, 미 국채금리, 환율, 고용지표 …).\n"
         "  title 은 기사 원문 제목 그대로, url 은 실제 확인한 주소, date 는 보도일(YYYY-MM-DD).\n"
         "  note 는 그 뉴스가 오늘 이 시장에 어떤 영향을 줬는지 한국어 한 문장(40~70자).\n"
-        "  summary 는 그 기사 내용을 한국어 5문장으로 요약한 배열(문장당 40~80자).\n"
-        "    기사에 실제로 있는 사실만, 숫자·날짜·고유명사를 살려서. 본문을 그대로\n"
-        "    옮기지 말고 네 말로 요약하라.\n"
-        "  실제로 확인하지 않은 자료를 지어내지 마라. 없으면 빈 배열."
+        "  기사별 상세 요약은 필요 없다 — 흐름 설명은 flow 가 이미 하고 있고,\n"
+        "  여기 기사들은 그 근거로 제목만 걸어 둘 것이다.\n"
+        "\n"
+        f"sectors: 오늘 크게 움직인 업종을 최대 {SECTOR_MAX_ITEMS}개.\n"
+        "  ★ 개별 종목 이야기가 아니라 '업종 이야기'를 써라.\n"
+        "     쓰지 말 것: 특정 회사의 영업이익·매출액·목표주가·EPS 같은 숫자,\n"
+        "                 '○○가 실적을 발표했다' 류의 개별 기업 소식.\n"
+        "     쓸 것    : 그 업종 전체에 작용한 바깥 요인 —\n"
+        "                 정책·규제 발표(관세, 보조금, 인허가), 원자재·부품 가격,\n"
+        "                 수요 변화(관광객 수, 가입자·이용자 수, 출하량),\n"
+        "                 환율·금리, 업황 사이클, 경쟁 구도 변화, 지정학.\n"
+        "  ★ 같은 업종을 두 번 쓰지 마라. 서로 다른 업종 5개.\n"
+        "  sector 는 위 자료에 적힌 업종명을 그대로 쓴다(새로 지어내지 마라).\n"
+        "  dir 은 그 업종이 전체적으로 올랐으면 \"up\", 내렸으면 \"down\".\n"
+        "  driver 는 그 업종을 움직인 요인을 설명하는 한국어 2~3문장(140~220자).\n"
+        "    '무엇이 어떻게 바뀌어서 이 업종에 어떤 영향을 주는지'가 드러나야 한다.\n"
+        "    예) \"엔저가 158엔대까지 밀리면서 일본을 찾는 관광객이 다시 늘고 있다.\n"
+        "         면세·백화점은 매출의 상당 부분이 외국인 소비라 환율이 그대로\n"
+        "         객수로 이어진다.\" — 이런 식.\n"
+        "  headline·url·date 는 그 요인을 다룬 기사. 업종·정책·시장을 다룬 기사여야\n"
+        "    하고, 특정 회사 한 곳의 실적 기사는 안 된다.\n"
+        "\n"
+        "★ 출처 공통: 실제로 확인하지 않은 자료를 지어내지 마라. 없으면 빈 배열."
     )
     final = _stream_final(
         client,
@@ -894,7 +943,7 @@ def _overview_structured(client, prompt):
     text = ''.join(b.text for b in final.content if b.type == 'text')
     data = _extract_json(text)
     if not isinstance(data, dict) or not isinstance(data.get('lines'), list):
-        return None, []
+        return None, [], '', []
     lines = [_clean_overview_line(str(x)) for x in data['lines']]
     macro = []
     for m in (data.get('macro_sources') or [])[:MACRO_MAX_ITEMS]:
@@ -904,16 +953,70 @@ def _overview_structured(client, prompt):
         if not url.startswith('http'):
             continue                       # URL 없는 항목은 근거가 아니다
         macro.append({
-            'topic':   (m.get('topic') or '').strip()[:24],
-            'title':   (m.get('title') or '').strip()[:140],
-            'url':     url[:400],
-            'date':    (m.get('date') or '').strip()[:10],
-            'note':    (m.get('note') or '').strip()[:120],
-            'summary': _clean_sentences(m.get('summary'), 5, 120),
+            'topic': (m.get('topic') or '').strip()[:24],
+            'title': (m.get('title') or '').strip()[:140],
+            'url':   url[:400],
+            'date':  (m.get('date') or '').strip()[:10],
+            'note':  (m.get('note') or '').strip()[:120],
         })
     macro = _dedupe_sources(macro)
-    print(f'  총평 구조화 출력 OK — 매크로 출처 {len(macro)}건')
-    return lines, macro
+    flow = _clean_flow(data.get('flow'))
+    sectors = _clean_sectors(data.get('sectors'))
+    print(f'  총평 구조화 출력 OK — 매크로 {len(macro)}건 · 섹터 {len(sectors)}건 '
+          f'· 흐름 {len(flow)}자')
+    return lines, macro, flow, sectors
+
+
+def _clean_flow(value):
+    """'시장의 흐름' 본문. 문단 구분은 남기고 불릿·번호는 걷어낸다.
+
+    clip() 을 쓰지 않는다 — 그건 A4 한 줄에 밀어 넣는 용도라 개행을 공백으로
+    눌러버린다. 여기서는 문단이 글의 일부다.
+    """
+    if not isinstance(value, str):
+        return ''
+    paras = []
+    for para in re.split(r'\n\s*\n', value.strip()):
+        lines = [_LIST_MARKER.sub('', ln).strip() for ln in para.splitlines()]
+        joined = re.sub(r'[ \t]+', ' ', ' '.join(ln for ln in lines if ln)).strip()
+        joined = _ASCII_PREAMBLE.sub('', joined)
+        if joined:
+            paras.append(joined)
+    out = '\n\n'.join(paras)
+    if len(out) > FLOW_MAX_CHARS:
+        cut = out[:FLOW_MAX_CHARS]
+        # 문장 중간에서 끊기지 않게, 마지막 문장 끝까지만 남긴다.
+        end = max((cut.rfind(c) for c in '.!?…'), default=-1)
+        out = cut[:end + 1] if end >= FLOW_MAX_CHARS * 0.6 else cut
+    return out
+
+
+def _clean_sectors(value):
+    """섹터 뉴스. 같은 업종이 두 번 오면 뒤엣것을 버린다."""
+    if not isinstance(value, list):
+        return []
+    out, seen = [], set()
+    for s in value:
+        if not isinstance(s, dict):
+            continue
+        sector = (s.get('sector') or '').strip()[:24]
+        driver = (s.get('driver') or '').strip()
+        url = (s.get('url') or '').strip()
+        # 업종명과 설명이 없으면 카드로 쓸 수 없다. URL 은 없어도 설명은 남긴다.
+        if not sector or len(driver) < 30 or sector in seen:
+            continue
+        seen.add(sector)
+        out.append({
+            'sector':   sector,
+            'dir':      'down' if s.get('dir') == 'down' else 'up',
+            'driver':   clip(driver, 320),
+            'headline': (s.get('headline') or '').strip()[:140],
+            'url':      url[:400] if url.startswith('http') else '',
+            'date':     (s.get('date') or '').strip()[:10],
+        })
+        if len(out) >= SECTOR_MAX_ITEMS:
+            break
+    return out
 
 
 def _finish_overview(lines, final, text):
@@ -1006,11 +1109,12 @@ def build_overview(client, market, date, idx_ctx, top, bot):
     # 추가 검색 비용은 없고 뉴스 목록(/news)의 2층 재료가 된다.
     # 실패하면 지금까지의 평문 경로로 그대로 내려앉는다 — 총평은 리포트 본문이라
     # 구조화 출력 때문에 통째로 날아가면 안 된다.
-    macro = []
+    news = {'macro': [], 'flow': '', 'sectors': []}
     try:
-        macro_lines, macro = _overview_structured(client, prompt)
-        if macro_lines:
-            return _finish_overview(macro_lines, None, ''), macro
+        ov_lines, macro, flow, sectors = _overview_structured(client, prompt)
+        news = {'macro': macro, 'flow': flow, 'sectors': sectors}
+        if ov_lines:
+            return _finish_overview(ov_lines, None, ''), news
         print('  [NOTE] 총평 구조화 출력 실패 — 평문으로 재시도')
     except Exception as e:
         print(f'  [NOTE] 총평 구조화 출력 예외({type(e).__name__}) — 평문으로 재시도')
@@ -1028,10 +1132,10 @@ def build_overview(client, market, date, idx_ctx, top, bot):
         )
         text = ''.join(b.text for b in final.content if b.type == 'text')
         lines = [_clean_overview_line(ln) for ln in text.strip().splitlines()]
-        return _finish_overview(lines, final, text), macro
+        return _finish_overview(lines, final, text), news
     except Exception as e:
         print(f'  [WARN] 총평 생성 실패: {e}')
-        return ['총평을 생성하지 못했습니다.'], macro
+        return ['총평을 생성하지 못했습니다.'], news
 
 
 # ── 3단계: HTML 렌더링 (결정론적 템플릿) ────────────────────────────────────────
@@ -1291,7 +1395,7 @@ def render_html(market, date, idx_data, overview, top, bot):
 #
 # 주요도 점수는 여기서 계산하지 않고 원재료만 저장한다 — 화면을 다듬는 동안
 # 순위 공식을 바꾸려면 매번 다시 생성해야 하기 때문이다. 정렬은 읽는 쪽에서 한다.
-def build_news_payload(market, date, ts, idx_data, top, bot, macro):
+def build_news_payload(market, date, ts, idx_data, top, bot, news):
     """뉴스 목록 저장용 구조. 순수 함수라 오프라인에서 검증할 수 있다."""
     items = []
     for rows, direction in ((top, 'up'), (bot, 'down')):
@@ -1319,13 +1423,36 @@ def build_news_payload(market, date, ts, idx_data, top, bot, macro):
         if d and d.get('changePct') is not None:
             idx.append({'key': k, 'name': d.get('name', k),
                         'pct': round(float(d['changePct']), 4)})
+    news = news or {}
     return {
         'market': market, 'base_date': date, 'updated_at': ts,
         'indices': idx,
         'items': items,
-        'macro': list(macro or []),
+        'macro': list(news.get('macro') or []),
+        'flow': news.get('flow') or '',
+        'sectors': _attach_sector_moves(news.get('sectors') or [], items),
         'sourced': sum(1 for i in items if i['url']),
     }
+
+
+def _attach_sector_moves(sectors, items):
+    """섹터 카드에 등락 통계를 붙인다.
+
+    등락률은 모델에게 묻지 않고 수집한 시세에서 직접 계산한다 — 숫자를
+    지어낼 여지를 없앤다. 업종명이 자료와 안 맞으면 통계 없이 카드만 남긴다.
+    """
+    by_sector = {}
+    for i in items:
+        s = (i.get('sector') or '').strip()
+        if s:
+            by_sector.setdefault(s.casefold(), []).append(i['ret'])
+    out = []
+    for s in sectors:
+        rets = by_sector.get(s['sector'].casefold())
+        out.append({**s,
+                    'avg': round(sum(rets) / len(rets), 4) if rets else None,
+                    'n':   len(rets) if rets else 0})
+    return out
 
 
 def save_news(market, date, payload):
@@ -1333,7 +1460,8 @@ def save_news(market, date, payload):
         fb_ref(f'/news/{market}/{date}').set(payload)
         print(f'[{market}] 뉴스 목록 저장 — /news/{market}/{date} '
               f'({len(payload["items"])}종목 중 출처 {payload["sourced"]}건, '
-              f'매크로 {len(payload["macro"])}건)')
+              f'매크로 {len(payload["macro"])}건, 섹터 {len(payload["sectors"])}건, '
+              f'흐름 {len(payload["flow"])}자)')
         return True
     except Exception as e:
         # 리포트는 이미 게시됐다. 뉴스 저장 실패로 실행을 실패시키지 않는다.
@@ -1597,8 +1725,18 @@ def self_test(out_path):
     # ── build_news_payload(): 뉴스 목록 저장 구조 ─────────────────────────────
     macro_sample = [{'topic': '금', 'title': 'Gold hits record', 'url': 'https://ex.com/g',
                      'date': '2026-07-28', 'note': '실질금리 하락에 금 현물이 4% 올랐다.'}]
+    # 업종명은 아래 top/bot 더미가 쓰는 이름과 맞춰 등락 통계가 붙는지 본다.
+    sector_sample = [{'sector': top[0]['sector'], 'dir': 'up',
+                      'driver': '엔저가 이어지며 면세·백화점 객수가 늘고 있다. ' * 2,
+                      'headline': '엔저에 방일 관광객 급증', 'url': 'https://ex.com/s',
+                      'date': '2026-07-28'},
+                     {'sector': '존재하지않는업종', 'dir': 'down',
+                      'driver': '자료에 없는 업종이라 등락 통계가 붙지 않아야 한다. ' * 2,
+                      'headline': 'x', 'url': '', 'date': ''}]
+    news_sample = {'macro': macro_sample, 'flow': '오늘 시장은 이렇게 움직였다.\n\n둘째 문단.',
+                   'sectors': sector_sample}
     np = build_news_payload('kr', '2026-07-28', '2026-07-28 16:30', idx_data,
-                            top, bot, macro_sample)
+                            top, bot, news_sample)
     assert np['market'] == 'kr' and np['base_date'] == '2026-07-28'
     assert len(np['items']) == 20, f'항목 수 이상: {len(np["items"])}'
     assert [i['dir'] for i in np['items']].count('up') == 10, '상승 방향 표기 이상'
@@ -1643,14 +1781,57 @@ def self_test(out_path):
     assert len(_dedupe_sources(diff)) == 2, '서로 다른 기사를 지웠다'
     assert np['indices'] and np['indices'][0]['key'] == 'kospi', '지수 스냅샷 이상'
     assert np['macro'] == macro_sample, '매크로 출처 미저장'
+
+    # ── 섹터 카드 · 흐름 본문 ─────────────────────────────────────────────────
+    assert np['flow'].count('\n\n') == 1, '흐름 본문의 문단 구분이 사라졌다'
+    assert len(np['sectors']) == 2, f'섹터 건수 이상: {len(np["sectors"])}'
+    s0 = np['sectors'][0]
+    assert s0['n'] > 0 and s0['avg'] is not None, '업종 등락 통계가 안 붙었다'
+    # 등락률은 모델이 아니라 시세에서 계산한다
+    rets = [i['ret'] for i in np['items'] if i['sector'] == top[0]['sector']]
+    assert s0['n'] == len(rets) and abs(s0['avg'] - sum(rets) / len(rets)) < 1e-6, \
+        '업종 평균 등락률 계산 오류'
+    assert np['sectors'][1]['avg'] is None and np['sectors'][1]['n'] == 0, \
+        '자료에 없는 업종엔 통계를 붙이면 안 된다'
+
+    # _clean_sectors(): 같은 업종 중복·설명 부실 항목은 버린다
+    cs = _clean_sectors([{'sector': '반도체', 'dir': 'up', 'driver': '가' * 40,
+                          'headline': 'h', 'url': 'https://a.com/1', 'date': '2026-07-28'},
+                         {'sector': '반도체', 'dir': 'down', 'driver': '나' * 40,
+                          'headline': 'h2', 'url': 'https://a.com/2', 'date': ''},
+                         {'sector': '조선', 'dir': 'down', 'driver': '짧다',
+                          'headline': 'h3', 'url': 'https://a.com/3', 'date': ''},
+                         {'sector': '', 'dir': 'up', 'driver': '다' * 40,
+                          'headline': 'h4', 'url': '', 'date': ''}])
+    assert [c['sector'] for c in cs] == ['반도체'], f'섹터 정리 실패: {cs}'
+    assert cs[0]['dir'] == 'up', '중복 업종은 먼저 온 것을 남겨야 한다'
+    assert _clean_sectors(None) == [] and _clean_sectors('x') == []
+    assert len(_clean_sectors([{'sector': f's{i}', 'dir': 'up', 'driver': '가' * 40,
+                                'headline': 'h', 'url': '', 'date': ''}
+                               for i in range(9)])) == SECTOR_MAX_ITEMS, '섹터 개수 제한 실패'
+    # URL 이 없어도 설명은 살린다 — 카드 본문이 흐름 설명의 일부이기 때문이다
+    assert _clean_sectors([{'sector': '조선', 'dir': 'up', 'driver': '가' * 40,
+                            'headline': 'h', 'url': 'ftp://x', 'date': ''}])[0]['url'] == ''
+
+    # _clean_flow(): 불릿은 걷고 문단은 남긴다
+    assert _clean_flow('- 첫 줄이다\n- 둘째 줄이다\n\n2) 다음 문단이다') \
+        == '첫 줄이다 둘째 줄이다\n\n다음 문단이다', '흐름 본문 정리 실패'
+    assert _clean_flow(None) == '' and _clean_flow(123) == ''
+    assert len(_clean_flow('가' * (FLOW_MAX_CHARS + 200))) == FLOW_MAX_CHARS, '흐름 길이 제한 실패'
+    # 넘칠 때는 문장 끝에서 끊는다 — 말이 잘린 채 끝나지 않게
+    long_flow = ('오늘 시장은 이렇게 움직였다. ' * 200)
+    cut = _clean_flow(long_flow)
+    assert len(cut) <= FLOW_MAX_CHARS and cut.endswith('.'), f'문장 경계 절단 실패: {cut[-30:]!r}'
+
     # 종목명은 리포트와 같은 규칙으로 정리돼야 한다
     us_np = build_news_payload('us', '2026-07-28', 'ts', idx_data,
                                [dict(top[0], name='Shopify Inc. Class A Subordinate Voting Shares')],
-                               [], [])
+                               [], None)
     assert us_np['items'][0]['name'] == 'Shopify Inc', \
         f'종목명 정리 안 됨: {us_np["items"][0]["name"]}'
     # 빈 입력에서도 죽지 않는다
     empty = build_news_payload('cn', '2026-07-28', 'ts', None, [], [], None)
+    assert empty['flow'] == '' and empty['sectors'] == []
     assert empty['items'] == [] and empty['macro'] == [] and empty['sourced'] == 0
     assert empty['indices'] == [], '지수 없을 때 처리 이상'
 
@@ -1792,11 +1973,13 @@ def main():
         print(f'[{market}] 회사 소개 캐시 {saved}건 갱신')
 
     print(f'[{market}] 2단계 — 총평 생성...')
-    overview, macro = build_overview(client, market, date, idx_ctx, top_r, bot_r)
+    overview, news = build_overview(client, market, date, idx_ctx, top_r, bot_r)
     for line in overview:
         print(f'  • {line}')
-    for m in macro:
+    for m in news['macro']:
         print(f'  [매크로] {m["topic"]}: {m["title"][:60]}')
+    for s in news['sectors']:
+        print(f'  [섹터] {s["sector"]}({s["dir"]}): {s["driver"][:60]}')
 
     print(f'[{market}] 3단계 — HTML 렌더링...')
     ts = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
@@ -1812,7 +1995,7 @@ def main():
 
     # 리포트 게시 뒤에 저장한다 — 뉴스 저장이 실패해도 리포트는 이미 올라가 있다.
     save_news(market, date,
-              build_news_payload(market, date, ts, idx_data, top_r, bot_r, macro))
+              build_news_payload(market, date, ts, idx_data, top_r, bot_r, news))
 
 
 if __name__ == '__main__':
