@@ -169,13 +169,14 @@ RESEARCH_SCHEMA = {
         "sector_issue":         {"type": "string"},
         "source_url":           {"type": "string"},
         "source_title":         {"type": "string"},
+        "source_summary":       {"type": "array", "items": {"type": "string"}},
         "source_date":          {"type": "string"},
         "confidence":           {"type": "string", "enum": ["high", "medium", "low"]},
         "profile":              {"type": "string"},
     },
     "required": ["reason", "catalyst_type", "sector", "has_individual_issue",
-                 "sector_issue", "source_url", "source_title", "source_date",
-                 "confidence", "profile"],
+                 "sector_issue", "source_url", "source_title", "source_summary",
+                 "source_date", "confidence", "profile"],
     "additionalProperties": False,
 }
 
@@ -410,6 +411,10 @@ def build_research_prompt(market, date, stock, idx_ctx, need_profile):
    source_title은 그 기사·공시의 실제 제목을 원문 그대로. 지어내거나 번역하지 마라.
    (한국어 요약은 reason 이 담당한다. 여기는 원문 제목이다.)
    URL 이 없으면 source_title 도 빈 문자열("").
+   source_summary는 그 기사에서 읽은 내용을 한국어 3문장으로 요약한 배열
+   (문장당 40~70자). 표의 reason 보다 자세히, 기사에 실제로 있는 사실만 쓴다.
+   숫자·날짜·고유명사를 살려라. 본문을 그대로 옮기지 말고 네 말로 요약하라.
+   URL 이 없으면 빈 배열([]).
 10. confidence — high: 공시·IR 등 1차 출처 확인 / medium: 언론 보도 확인 / low: 추정
 {profile_rule}
 
@@ -424,9 +429,33 @@ def _json_fallback_instruction():
         + '|'.join(CATALYST_ENUM)
         + '", "sector": "...", "has_individual_issue": true|false, '
           '"sector_issue": "...", "source_url": "...", "source_title": "...", '
-          '"source_date": "YYYY-MM-DD", '
+          '"source_summary": ["...", "...", "..."], "source_date": "YYYY-MM-DD", '
           '"confidence": "high|medium|low", "profile": "..."}'
     )
+
+
+def _clean_sentences(value, max_n, max_len):
+    """모델이 준 문장 배열을 정리한다 (뉴스 요약용).
+
+    구조화 출력 스키마는 maxItems 를 지원하지 않으므로 개수·길이는 여기서 자른다.
+    문자열 하나로 오는 경우(줄바꿈으로 이어 쓴 경우)도 받아준다.
+    """
+    if isinstance(value, str):
+        value = [ln for ln in re.split(r'[\r\n]+', value) if ln.strip()]
+    if not isinstance(value, list):
+        return []
+    out = []
+    for v in value:
+        s = re.sub(r'\s+', ' ', str(v or '')).strip()
+        s = re.sub(r'^\s*(?:[-•*+]|\d+[.)])\s*', '', s)   # 불릿·번호 제거
+        # 목표는 40~80자라 이 문턱에 걸릴 일은 없다. 기호 조각·빈 줄만 걸러낸다
+        # (문턱을 높게 두면 짧지만 멀쩡한 문장을 조용히 지운다).
+        if len(s) < 6:
+            continue
+        out.append(s[:max_len])
+        if len(out) >= max_n:
+            break
+    return out
 
 
 def _extract_json(text):
@@ -571,7 +600,8 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
                 'reason': '등락 배경을 확인하지 못했습니다.',
                 'catalyst_type': '확인된_뉴스_없음',
                 'sector': '', 'has_individual_issue': False, 'sector_issue': '',
-                'source_url': '', 'source_title': '', 'source_date': '',
+                'source_url': '', 'source_title': '', 'source_summary': [],
+                'source_date': '',
                 'confidence': 'low',
                 'profile': cached_profile or '',
                 'profile_is_new': False,
@@ -590,8 +620,9 @@ def research_stock(client, market, date, stock, idx_ctx, cached_profile):
         'has_individual_issue': bool(data.get('has_individual_issue')),
         'sector_issue':         (data.get('sector_issue') or '').strip(),
         'source_url':           (data.get('source_url') or '').strip(),
-        # 제목은 뉴스 목록(/news)용이라 리포트에는 안 쓴다. 저장 크기만 묶어둔다.
+        # 제목·요약은 뉴스 목록(/news)용이라 리포트에는 안 쓴다. 크기만 묶어둔다.
         'source_title':         (data.get('source_title') or '').strip()[:140],
+        'source_summary':       _clean_sentences(data.get('source_summary'), 3, 110),
         'source_date':          (data.get('source_date') or '').strip(),
         'confidence':           conf if conf in ('high', 'medium', 'low') else 'low',
         'profile':              cached_profile or profile or '회사 정보 미확보',
@@ -760,13 +791,14 @@ OVERVIEW_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "topic": {"type": "string"},   # 금, 유가, 금리, 환율, 고용지표 …
-                    "title": {"type": "string"},   # 기사 원문 제목
-                    "url":   {"type": "string"},
-                    "date":  {"type": "string"},
-                    "note":  {"type": "string"},   # 한국어 한 줄 — 시장에 준 영향
+                    "topic":   {"type": "string"},   # 금, 유가, 금리, 환율, 고용지표 …
+                    "title":   {"type": "string"},   # 기사 원문 제목
+                    "url":     {"type": "string"},
+                    "date":    {"type": "string"},
+                    "note":    {"type": "string"},   # 한국어 한 줄 — 시장에 준 영향
+                    "summary": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["topic", "title", "url", "date", "note"],
+                "required": ["topic", "title", "url", "date", "note", "summary"],
                 "additionalProperties": False,
             },
         },
@@ -778,17 +810,63 @@ OVERVIEW_SCHEMA = {
 MACRO_MAX_ITEMS = 6
 
 
+def _norm_title(s):
+    """제목 비교용 정규화 — 매체마다 붙는 장식과 공백·기호 차이를 지운다."""
+    t = re.sub(r'[\s　]+', '', str(s or '').lower())
+    return re.sub(r'[^0-9a-z가-힣一-龥ぁ-んァ-ヶ]', '', t)
+
+
+def _dedupe_sources(items):
+    """같은 기사·같은 내용을 두 번 싣지 않는다.
+
+    같은 사건을 여러 매체가 쓰거나 종합 시황 기사가 겹치는 일이 잦다
+    (실측: 미국편 매크로 6건 중 3건이 'Stock Market Today' 계열이었다).
+    URL 과 정규화 제목으로 걸러내고, 제목이 서로 포함 관계면 긴 쪽을 남긴다.
+    """
+    out = []
+    for it in items:
+        u = (it.get('url') or '').split('?')[0].rstrip('/')
+        t = _norm_title(it.get('title'))
+        dup = False
+        for j, ex in enumerate(out):
+            eu = (ex.get('url') or '').split('?')[0].rstrip('/')
+            et = _norm_title(ex.get('title'))
+            if u and u == eu:
+                dup = True
+            # 포함 관계는 짧은 쪽이 충분히 길 때만 본다 — 짧은 제목끼리
+            # 우연히 포함되는 오탐을 막는다.
+            elif t and et and (t == et or (min(len(t), len(et)) >= 10
+                                           and (t in et or et in t))):
+                dup = True
+                if len(t) > len(et):        # 더 구체적인 제목을 남긴다
+                    out[j] = it
+            if dup:
+                break
+        if not dup:
+            out.append(it)
+    return out
+
+
 def _overview_structured(client, prompt):
     """총평을 구조화 출력으로 받는다. 실패하면 (None, []) 를 돌려 평문 경로로 넘긴다."""
     instr = (
         f"\n\n━━━ 출력 형식 ━━━\n"
         f"lines: 위 규칙대로 쓴 {OVERVIEW_LINES}개의 문장(문자열 배열). 기호·번호 없이 문장만.\n"
-        f"macro_sources: 매크로 원인을 확인하려고 실제로 본 기사·자료를 최대 "
-        f"{MACRO_MAX_ITEMS}건.\n"
+        f"macro_sources: 오늘 시장의 흐름을 설명해 주는 기사를 최대 {MACRO_MAX_ITEMS}건.\n"
+        "  ★ 출처는 두 곳에서 나온다. 둘 다 쓸 수 있다:\n"
+        "    (1) 매크로 원인을 확인하려고 네가 직접 검색해서 본 기사\n"
+        "    (2) 위 [상승/하락 종목] 자료에 딸려 있는 출처 — 그 종목 뉴스가 오늘 시장\n"
+        "        전체의 축을 설명한다면(정책 발표, 업종 전반을 흔든 규제 등) 그 URL 을\n"
+        "        그대로 인용하라. 이미 자료에 있으니 다시 검색하지 마라.\n"
+        "  ★ 서로 내용이 겹치는 기사를 여러 건 넣지 마라. 한 주제당 가장 좋은 기사 1건만.\n"
+        "     (같은 사건을 다룬 다른 매체 기사, 종합 시황 기사 중복 등은 하나로 줄여라)\n"
         "  topic 은 무엇에 대한 것인지 짧은 명사(금, 유가, 미 국채금리, 환율, 고용지표 …).\n"
         "  title 은 기사 원문 제목 그대로, url 은 실제 확인한 주소, date 는 보도일(YYYY-MM-DD).\n"
         "  note 는 그 뉴스가 오늘 이 시장에 어떤 영향을 줬는지 한국어 한 문장(40~70자).\n"
-        "  실제로 열어보지 않은 자료를 지어내지 마라. 없으면 빈 배열."
+        "  summary 는 그 기사 내용을 한국어 5문장으로 요약한 배열(문장당 40~80자).\n"
+        "    기사에 실제로 있는 사실만, 숫자·날짜·고유명사를 살려서. 본문을 그대로\n"
+        "    옮기지 말고 네 말로 요약하라.\n"
+        "  실제로 확인하지 않은 자료를 지어내지 마라. 없으면 빈 배열."
     )
     final = _stream_final(
         client,
@@ -814,12 +892,14 @@ def _overview_structured(client, prompt):
         if not url.startswith('http'):
             continue                       # URL 없는 항목은 근거가 아니다
         macro.append({
-            'topic': (m.get('topic') or '').strip()[:24],
-            'title': (m.get('title') or '').strip()[:140],
-            'url':   url[:400],
-            'date':  (m.get('date') or '').strip()[:10],
-            'note':  (m.get('note') or '').strip()[:120],
+            'topic':   (m.get('topic') or '').strip()[:24],
+            'title':   (m.get('title') or '').strip()[:140],
+            'url':     url[:400],
+            'date':    (m.get('date') or '').strip()[:10],
+            'note':    (m.get('note') or '').strip()[:120],
+            'summary': _clean_sentences(m.get('summary'), 5, 120),
         })
+    macro = _dedupe_sources(macro)
     print(f'  총평 구조화 출력 OK — 매크로 출처 {len(macro)}건')
     return lines, macro
 
@@ -852,6 +932,11 @@ def build_overview(client, market, date, idx_ctx, top, bot):
             + (f"/{r['sector']}" if r.get('sector') else '')
             + ('/개별' if r.get('has_individual_issue') else '/섹터·매크로')
             + f"] {r['reason'][:110]}"
+            # 출처를 같이 넘긴다. 이게 없으면 종목 뉴스가 이미 그날의 축을
+            # 설명하는 날에도 총평이 인용할 URL 이 없어 매크로가 통째로 빈다
+            # (실측 2026-08-07 국내편: 폴리실리콘 관세가 축이었는데 매크로 0건).
+            + (f"\n    ↳ 출처: {r['source_title'][:90]} | {r['source_url']}"
+               if r.get('source_url') else '')
             for r in rows)
 
     lang = SEARCH_LANG.get(market, '현지어')
@@ -1211,6 +1296,7 @@ def build_news_payload(market, date, ts, idx_data, top, bot, macro):
                 'confidence': r.get('confidence') or 'low',
                 'reason':     (r.get('reason') or '').strip(),
                 'title':      (r.get('source_title') or '').strip(),
+                'summary':    list(r.get('source_summary') or []),
                 'url':        url,
                 'date':       (r.get('source_date') or '').strip(),
                 'failed':     bool(r.get('research_failed')),
@@ -1283,6 +1369,8 @@ def self_test(out_path):
             'sector_issue': sector_issue if i % 3 == 1 else '',
             'source_url': f'https://example.com/news/article-{i}-long-path' if indiv else '',
             'source_title': f'테스트 기사 제목 {i}' if indiv else '',
+            'source_summary': [f'요약 문장 {i}-1 입니다.', f'요약 문장 {i}-2 입니다.',
+                               f'요약 문장 {i}-3 입니다.'] if indiv else [],
             'source_date': '2026-07-27',
             'confidence': ['high', 'medium', 'low'][i % 3],
         })
@@ -1510,6 +1598,37 @@ def self_test(out_path):
               'confidence', 'reason', 'title', 'url', 'date', 'failed'):
         assert k in first, f'항목 필드 누락: {k}'
     assert first['title'] == '테스트 기사 제목 0', '기사 제목 미저장'
+    assert first['summary'] == ['요약 문장 0-1 입니다.', '요약 문장 0-2 입니다.',
+                                '요약 문장 0-3 입니다.'], '기사 요약 미저장'
+    assert np['items'][1]['summary'] == [], '출처 없는 종목의 요약이 비어야 한다'
+
+    # ── _clean_sentences(): 문장 배열 정리 ────────────────────────────────────
+    assert _clean_sentences(['가나다라마바사', '  두 번째 문장  '], 3, 50) \
+        == ['가나다라마바사', '두 번째 문장'], '공백 정리 실패'
+    assert _clean_sentences(['- 불릿 붙은 문장입니다', '2) 번호 붙은 문장입니다'], 3, 50) \
+        == ['불릿 붙은 문장입니다', '번호 붙은 문장입니다'], '기호 제거 실패'
+    assert len(_clean_sentences(['문장입니다 하나', '문장입니다 둘', '문장입니다 셋',
+                                 '문장입니다 넷'], 3, 50)) == 3, '개수 제한 실패'
+    assert _clean_sentences(['짧음'], 3, 50) == [], '너무 짧은 문장 제거 실패'
+    assert _clean_sentences('한 줄로 온 경우입니다\n두 번째 줄입니다', 3, 50) \
+        == ['한 줄로 온 경우입니다', '두 번째 줄입니다'], '문자열 입력 처리 실패'
+    assert _clean_sentences(None, 3, 50) == [] and _clean_sentences(123, 3, 50) == []
+    assert len(_clean_sentences(['가' * 300], 3, 110)[0]) == 110, '길이 제한 실패'
+
+    # ── _dedupe_sources(): 같은 내용 두 번 싣지 않기 ──────────────────────────
+    same_url = [{'url': 'https://a.com/x?utm=1', 'title': '제목 하나입니다'},
+                {'url': 'https://a.com/x/', 'title': '다른 제목입니다'}]
+    assert len(_dedupe_sources(same_url)) == 1, 'URL 중복 제거 실패'
+    same_title = [{'url': 'https://a.com/1', 'title': 'Stock Market Today: 다우 하락'},
+                  {'url': 'https://b.com/2', 'title': 'Stock  Market  Today: 다우 하락'}]
+    assert len(_dedupe_sources(same_title)) == 1, '제목 중복 제거 실패'
+    contained = [{'url': 'https://a.com/1', 'title': '연준 매파 발언에 금리 상승'},
+                 {'url': 'https://b.com/2', 'title': '연준 매파 발언에 금리 상승, 나스닥 반락'}]
+    dd = _dedupe_sources(contained)
+    assert len(dd) == 1 and '나스닥' in dd[0]['title'], '포함 관계에서 긴 제목을 남겨야 한다'
+    diff = [{'url': 'https://a.com/1', 'title': '유가 급등 소식'},
+            {'url': 'https://b.com/2', 'title': '고용지표 부진 발표'}]
+    assert len(_dedupe_sources(diff)) == 2, '서로 다른 기사를 지웠다'
     assert np['indices'] and np['indices'][0]['key'] == 'kospi', '지수 스냅샷 이상'
     assert np['macro'] == macro_sample, '매크로 출처 미저장'
     # 종목명은 리포트와 같은 규칙으로 정리돼야 한다
