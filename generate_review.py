@@ -828,7 +828,9 @@ OVERVIEW_SCHEMA = {
     "additionalProperties": False,
 }
 
-MACRO_MAX_ITEMS  = 6
+# 섹터 카드가 같은 기사를 먼저 가져가면 헤드라인 목록에서 빠진다. 실측(4개 시장)
+# 6건을 받으면 화면에 2~3건만 남았다. 화면 목표 5건을 채우려면 넉넉히 받아야 한다.
+MACRO_MAX_ITEMS  = 9
 SECTOR_MAX_ITEMS = 5
 FLOW_MAX_CHARS   = 900
 
@@ -884,7 +886,8 @@ def _overview_structured(client, prompt):
         "  그래서 어디가 오르고 어디가 빠졌는지(결과) 순으로 이어라.\n"
         "  줄바꿈(\\n\\n)으로 2~3문단 나눠도 된다. 개조식·불릿 쓰지 말고 문장으로.\n"
         "\n"
-        f"macro_sources: 오늘 시장의 흐름을 설명해 주는 기사를 {MACRO_MAX_ITEMS}건 내외.\n"
+        f"macro_sources: 오늘 시장의 흐름을 설명해 주는 기사를 {MACRO_MAX_ITEMS}건까지.\n"
+        "  아래 sectors 에 건 기사는 화면에서 빠지므로, 서로 다른 주제로 넉넉히 담아라.\n"
         "  ★ 여기는 '시장 전반' 칸이다. 개별 종목 기사는 넣지 마라.\n"
         "     넣을 것 : 지수·금리·환율·유가 등 시장 전체 / 업종 전반을 움직인 정책·규제 /\n"
         "               수급(외국인·기관 순매수) / 거시 지표.\n"
