@@ -1504,7 +1504,7 @@ def render_sector_cards(sectors):
                 parts.append(f'{E(st["name"])} <span style="color:{c};font-weight:800;'
                              f'font-variant-numeric:tabular-nums">'
                              f'{fmt_ret(st["ret"])}</span>')
-            chips = (f'<span style="flex:1;min-width:0;text-align:right;'
+            chips = (f'<span style="flex:1;min-width:0;'
                      f'font-size:7.2pt;color:#64748b;white-space:nowrap;'
                      f'overflow:hidden;text-overflow:ellipsis">'
                      + '<span style="color:#cbd5e1"> · </span>'.join(parts)
@@ -1709,9 +1709,28 @@ def build_news_payload(market, date, ts, idx_data, top, bot, news):
         'items': items,
         'macro': list(news.get('macro') or []),
         'flow': news.get('flow') or '',
-        'sectors': _attach_sector_moves(news.get('sectors') or [], items),
+        'sectors': _attach_sector_moves(
+            news.get('sectors') or [],
+            sector_source(items, news.get('mcap_rows') or [])),
         'sourced': sum(1 for i in items if i['url']),
     }
+
+
+def sector_source(*groups):
+    """업종을 묶을 때 셀 종목. 코드로 중복을 제거하고 먼저 온 것을 남긴다.
+
+    등락 상위 20종목만 세면 대형주가 업종에서 빠진다 — 국내편 반도체 카드에
+    피에스케이홀딩스만 오르고 SK하이닉스(-4.9%)가 없었다. 시총 상위 무버도
+    같이 센다. 겹치는 종목은 한 번만.
+    """
+    out, seen = [], set()
+    for g in groups:
+        for r in g:
+            code = str(r.get('code', ''))
+            if code and code not in seen:
+                seen.add(code)
+                out.append(r)
+    return out
 
 
 def _attach_sector_moves(sectors, items):
@@ -2179,6 +2198,24 @@ def self_test(out_path):
     assert long_np['sectors'][0]['stocks'][0]['name'] == 'Shopify Inc', \
         f"종목명 정리 안 됨: {long_np['sectors'][0]['stocks'][0]['name']}"
 
+    # 시총 무버도 업종에 함께 센다 — 등락 상위 20종목만 세면 대형주가 빠진다
+    # 등락 폭 순으로 잘리므로, 칩에 실리는지 보려면 크게 움직인 값을 준다
+    big = dict(top[0], code='BIGCAP', name='대형주', ret=-0.91)
+    with_big = build_news_payload(
+        'kr', '2026-07-28', 'ts', idx_data, top, bot,
+        {'sectors': [dict(sector_sample[0])], 'mcap_rows': [big]})
+    names = [c['name'] for c in with_big['sectors'][0]['stocks']]
+    assert '대형주' in names, f'시총 무버가 업종 종목에 안 들어갔다: {names}'
+    assert with_big['sectors'][0]['n'] == np['sectors'][0]['n'] + 1, '업종 종목 수가 안 늘었다'
+    assert not any(i['code'] == 'BIGCAP' for i in with_big['items']), \
+        '시총 무버가 등락 상위 목록에까지 섞였다'
+
+    # sector_source(): 코드 중복은 먼저 온 것만 남긴다
+    ss = sector_source([{'code': 'A', 'v': 1}, {'code': 'B'}],
+                       [{'code': 'A', 'v': 2}, {'code': 'C'}], [{'code': ''}])
+    assert [r['code'] for r in ss] == ['A', 'B', 'C'], f'중복 제거 실패: {ss}'
+    assert ss[0]['v'] == 1, '중복일 때 먼저 온 것을 남겨야 한다'
+
     # _clean_sectors(): 같은 업종 중복·설명 부실 항목은 버린다
     cs = _clean_sectors([{'sector': '반도체', 'dir': 'up', 'driver': '가' * 40,
                           'headline': 'h', 'url': 'https://a.com/1', 'date': '2026-07-28'},
@@ -2379,8 +2416,11 @@ def main():
         print(f'  • {line}')
     for m in news['macro']:
         print(f'  [매크로] {m["topic"]}: {m["title"][:60]}')
-    # 업종 등락률은 리포트와 뉴스 화면이 같은 숫자를 써야 한다.
-    news['sectors'] = _attach_sector_moves(news['sectors'], top_r + bot_r)
+    # 업종 등락률·구성 종목은 리포트와 뉴스 화면이 같은 값을 써야 한다.
+    # 시총 무버도 함께 센다 — 대형주가 빠지면 업종 카드가 실제보다 좁아 보인다.
+    news['mcap_rows'] = mtop_r + mbot_r
+    news['sectors'] = _attach_sector_moves(
+        news['sectors'], sector_source(top_r, bot_r, mtop_r, mbot_r))
     for s in news['sectors']:
         print(f'  [섹터] {s["sector"]}({s["dir"]} {fmt_ret(s["avg"])}): {s["driver"][:56]}')
 
