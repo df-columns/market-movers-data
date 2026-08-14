@@ -49,8 +49,13 @@ PROFILE_TTL_DAYS  = 180    # 회사 소개 캐시 유효기간
 # 실측(2026-08-06 게시본): 중국 18/20, 국내 6/20, 일본 5/20 종목이 이걸로 실패.
 # 스트리밍으로 호출하므로 값을 키워도 HTTP 타임아웃 위험은 없다.
 RESEARCH_MAX_TOKENS = 32000
-RESEARCH_RETRIES    = 3    # 일시적 오류(429/5xx/네트워크) 재시도 횟수
+RESEARCH_RETRIES    = 5    # 일시적 오류(429/5xx/과부하/네트워크) 재시도 횟수
 PAUSE_RESUME_MAX    = 8    # 웹검색 pause_turn 재개 한도
+
+# 재시도 대기(초). 예전엔 2**retry 라 1초·2초였는데, 플랫폼 전체가 과부하일 때
+# 1초 뒤에 다시 물어봐야 여전히 과부하다(2026-08-14 kr/jp 동반 실패).
+# 과부하 구간은 보통 수십 초 단위로 풀리므로 그 눈금에 맞춘다.
+RESEARCH_BACKOFF = (15, 30, 60, 90)   # 모자라면 마지막 값을 계속 쓴다
 
 # ── 분량 (1페이지 리포트) ──────────────────────────────────────────────────────
 # 회사 소개와 등락 배경을 표의 같은 칸에 이어 쓴다. 두 열로 나누면 둘 중 긴 쪽이
@@ -569,6 +574,33 @@ TRANSIENT_ERRORS = (
     anthropic.APITimeoutError,
 )
 
+# 위 클래스 목록만으로는 '스트리밍 도중에 온 과부하'를 못 잡는다.
+# messages.stream() 은 연결이 열릴 때 HTTP 200 을 받고, 과부하는 그 뒤에 SSE
+# error 이벤트로 흘러들어온다. SDK 는 예외 종류를 '연결 당시의 상태코드'로
+# 정하므로(_streaming.py -> _make_status_error) 200 에 걸리는 분기가 없어
+# OverloadedError 가 아니라 밋밋한 부모 APIStatusError 가 튀어나온다.
+# 그래서 isinstance 로는 걸러지지 않고 재시도 0회로 즉사했다
+# (2026-08-14 kr 25종목 중 9개 실패 -> 성공률 64% 로 게시 게이트 미달).
+# 클래스를 못 믿으니 응답 본문의 error.type 을 같이 본다.
+_TRANSIENT_BODY_TYPES = {'overloaded_error', 'api_error', 'rate_limit_error'}
+
+
+def _is_transient(e):
+    """다시 시도해볼 만한 오류인가 — 클래스·상태코드·본문 세 가지로 본다."""
+    if isinstance(e, TRANSIENT_ERRORS):
+        return True
+    # 529(overloaded) 전용 클래스는 SDK 최상위에 노출돼 있지 않은 버전이 있다
+    # (0.86.0 기준 anthropic.OverloadedError 없음). 상태코드로도 받아둔다.
+    code = getattr(e, 'status_code', None)
+    if isinstance(code, int) and (code == 429 or code >= 500):
+        return True
+    body = getattr(e, 'body', None)
+    if isinstance(body, dict):
+        err = body.get('error')
+        if isinstance(err, dict):
+            return err.get('type') in _TRANSIENT_BODY_TYPES
+    return False
+
 
 def _describe_stop(final, text):
     """실패 원인을 로그에 남길 수 있게 stop_reason 을 사람 말로 바꾼다."""
@@ -613,10 +645,18 @@ def _research_attempts(prompt):
 
 
 def call_research(client, prompt):
-    """리서치 결과(JSON)를 받는다. 사다리 3단계 x 일시적 오류 재시도."""
+    """리서치 결과(JSON)를 받는다. 사다리 3단계 x 일시적 오류 재시도.
+
+    일시적 오류 재시도 예산은 '단계별'이 아니라 '종목당' RESEARCH_RETRIES 회로
+    공유한다. 단계마다 따로 주면 과부하가 길어질 때 한 종목이 3x5=15번을
+    붙잡고 늘어져 실행이 한 시간을 넘긴다. 예산을 다 쓰면 남은 단계는 한 번씩만
+    던져보고 끝낸다 — 어차피 그 단계들은 과부하가 아니라 응답 잘림을 위한
+    사다리라서 재시도보다 옵션을 줄이는 쪽이 효과가 있다.
+    """
     last_err = None
+    budget = RESEARCH_RETRIES        # 종목당 일시적 오류 재시도 예산
     for i, kwargs in enumerate(_research_attempts(prompt), 1):
-        for retry in range(RESEARCH_RETRIES):
+        while True:
             try:
                 final = _stream_final(client, **kwargs)
                 text = ''.join(b.text for b in final.content if b.type == 'text')
@@ -629,18 +669,20 @@ def call_research(client, prompt):
             except anthropic.BadRequestError as e:
                 last_err = f'[{i}단계] 400: {e}'
                 break                       # 옵션 문제 — 옵션을 줄인 다음 단계로
-            except TRANSIENT_ERRORS as e:
+            except Exception as e:
+                # 일시적 오류인지는 except 절의 클래스가 아니라 _is_transient()
+                # 로 가린다. 스트리밍 중간에 온 과부하는 밋밋한 APIStatusError
+                # 로 오기 때문에, 클래스로 except 를 나누면 여기로 새서 즉사한다.
                 last_err = f'[{i}단계] {type(e).__name__}: {e}'
-                if retry < RESEARCH_RETRIES - 1:
-                    wait = 2 ** retry + random.uniform(0, 1.5)
+                if _is_transient(e) and budget > 0:
+                    used = RESEARCH_RETRIES - budget
+                    wait = (RESEARCH_BACKOFF[min(used, len(RESEARCH_BACKOFF) - 1)]
+                            + random.uniform(0, 3))
+                    budget -= 1
                     print(f'    [재시도] {type(e).__name__} — {wait:.1f}s 후 '
-                          f'({retry + 2}/{RESEARCH_RETRIES})')
+                          f'(남은 재시도 {budget}/{RESEARCH_RETRIES})')
                     time.sleep(wait)
                     continue
-                break
-            except Exception as e:
-                # 예전 코드는 여기서 break 로 남은 단계를 통째로 버렸다.
-                last_err = f'[{i}단계] {type(e).__name__}: {e}'
                 break
         print(f'    [단계 실패] {last_err}')
     raise RuntimeError(last_err or '리서치 실패')
