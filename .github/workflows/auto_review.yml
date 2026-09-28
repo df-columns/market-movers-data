@@ -25,6 +25,17 @@ on:
         required: false
         default: false
         type: boolean
+      backend:
+        description: 'Claude 호출 경로 (api = API 키 / cli = 구독 토큰, Claude Code CLI)'
+        required: false
+        default: 'api'
+        type: choice
+        options: [api, cli]
+      model:
+        description: '모델 덮어쓰기 (비우면 generate_review.py 기본값, 예: sonnet)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   review:
@@ -38,6 +49,16 @@ jobs:
 
       - name: Install packages
         run: pip install -r requirements.txt
+
+      # 구독 토큰 경로 — Claude Code CLI 설치. api 경로에서는 건너뛴다.
+      - uses: actions/setup-node@v4
+        if: github.event.inputs.backend == 'cli'
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code CLI
+        if: github.event.inputs.backend == 'cli'
+        run: npm install -g @anthropic-ai/claude-code && claude --version
 
       - name: Determine markets
         id: mkt
@@ -55,7 +76,11 @@ jobs:
       - name: Generate & publish reviews
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # cli 경로에서는 API 키를 넘기지 않는다 — 있으면 CLI 가 구독 토큰 대신 그걸 쓴다.
+          ANTHROPIC_API_KEY: ${{ github.event.inputs.backend != 'cli' && secrets.ANTHROPIC_API_KEY || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ github.event.inputs.backend == 'cli' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          REVIEW_BACKEND: ${{ github.event.inputs.backend || 'api' }}
+          REVIEW_MODEL: ${{ github.event.inputs.model }}
         run: |
           # schedule 실행에는 inputs 가 없으므로 FORCE 는 비어 있게 된다 (줍기는 항상 멱등).
           FORCE=""

@@ -22,6 +22,8 @@
 #         python generate_review.py --self-test    (오프라인 렌더링 검증)
 
 import os, sys, re, json, html, argparse, random, time
+import atexit, shutil, subprocess, tempfile, threading
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
@@ -38,7 +40,13 @@ DATABASE_URL = 'https://market-movers-75461-default-rtdb.asia-southeast1.firebas
 CLAUDE_MODEL = 'claude-opus-5'
 KST = timezone(timedelta(hours=9))
 
-RESEARCH_WORKERS  = 6      # 종목 리서치 동시 실행 수
+# 호출 경로 — 'api'(기본): Python SDK + ANTHROPIC_API_KEY.
+#             'cli': Claude Code CLI(`claude -p`) + CLAUDE_CODE_OAUTH_TOKEN(구독 토큰).
+# cli 는 2026-09 구독 전환 파일럿용이다. 호출부는 그대로 두고 _stream_final 만 갈아끼운다.
+REVIEW_BACKEND = os.environ.get('REVIEW_BACKEND', 'api').strip().lower()
+CLAUDE_MODEL   = os.environ.get('REVIEW_MODEL', '').strip() or CLAUDE_MODEL
+
+RESEARCH_WORKERS  = int(os.environ.get('REVIEW_WORKERS', '6'))   # 종목 리서치 동시 실행 수
 SEARCH_MAX_USES   = 6      # 종목당 웹검색 최대 횟수
 PROFILE_TTL_DAYS  = 180    # 회사 소개 캐시 유효기간
 
@@ -554,6 +562,8 @@ def _stream_final(client, **kwargs):
     호출자가 stop_reason 을 반드시 봐야 한다(예전 코드는 안 봐서, 끝나지 않은
     턴의 빈 텍스트를 'JSON 파싱 실패'로만 기록했다).
     """
+    if REVIEW_BACKEND == 'cli':
+        return _cli_final(**kwargs)
     messages = list(kwargs.pop('messages'))
     final = None
     for _ in range(PAUSE_RESUME_MAX):
@@ -563,6 +573,119 @@ def _stream_final(client, **kwargs):
             break
         messages = messages + [{'role': 'assistant', 'content': final.content}]
     return final
+
+
+# ── CLI 경로 (REVIEW_BACKEND=cli) ───────────────────────────────────────────────
+# SDK 호출과 같은 모양(final.content[].text, final.stop_reason)을 돌려줘서
+# 호출부(call_research, 총평)는 어느 경로인지 모른 채 그대로 동작한다.
+# 기본 Claude Code 시스템 프롬프트는 코딩용이라 길고 쓸모가 없으므로 짧게 갈아끼운다.
+# 도구는 WebSearch 하나만 연다(SDK 쪽 web_search 와 같은 역할).
+CLI_TIMEOUT = 900   # 초 — 종목 하나가 15분을 넘기면 멈춘 것으로 본다
+CLI_SYSTEM_PROMPT = (
+    '당신은 주식시장 리서치 도우미입니다. 필요하면 웹검색으로 사실을 확인하고, '
+    '사용자 지시가 정한 형식 그대로만 답하세요. 파일을 만들거나 코드를 실행하지 마세요.'
+)
+
+_cli_lock  = threading.Lock()
+_cli_usage = {'calls': 0, 'errors': 0, 'input_tokens': 0, 'output_tokens': 0,
+              'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0,
+              'web_search_requests': 0, 'total_cost_usd': 0.0, 'seconds': 0.0}
+
+
+class CliError(Exception):
+    """CLI 호출 실패. status_code 를 달아 _is_transient() 가 그대로 판단하게 한다."""
+    def __init__(self, msg, status_code=None):
+        super().__init__(msg)
+        self.status_code = status_code
+
+
+def _cli_classify(msg):
+    m = (msg or '').lower()
+    # 구독 한도 소진은 기다려도 몇 시간 안 풀린다 — 재시도하지 않는다.
+    if 'usage limit' in m or 'limit reached' in m:
+        return None
+    if any(k in m for k in ('overloaded', '529', 'rate limit', '429', '500', '502',
+                            '503', 'timeout', 'timed out', 'econnreset', 'network')):
+        return 429
+    return None
+
+
+def _cli_final(**kwargs):
+    prompt = kwargs['messages'][-1]['content']
+    cfg = kwargs.get('output_config') or {}
+    schema = (cfg.get('format') or {}).get('schema')
+    max_uses = next((t.get('max_uses') for t in kwargs.get('tools') or []), None)
+    if max_uses:
+        prompt += f'\n\n(웹검색은 최대 {max_uses}회까지만 사용하라.)'
+
+    cmd = [shutil.which('claude') or 'claude', '-p',
+           '--output-format', 'json',
+           '--model', kwargs.get('model') or CLAUDE_MODEL,
+           '--effort', cfg.get('effort') or 'medium',
+           '--tools', 'WebSearch', '--allowedTools', 'WebSearch',
+           '--system-prompt', CLI_SYSTEM_PROMPT,
+           '--no-session-persistence', '--disable-slash-commands', '--strict-mcp-config']
+    if schema:
+        cmd += ['--json-schema', json.dumps(schema, ensure_ascii=False)]
+
+    env = dict(os.environ)
+    env.pop('ANTHROPIC_API_KEY', None)       # 있으면 CLI 가 구독 토큰 대신 이걸 쓴다
+    env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(kwargs.get('max_tokens') or RESEARCH_MAX_TOKENS)
+
+    t0 = time.time()
+    try:
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                              encoding='utf-8', env=env, cwd=tempfile.gettempdir(),
+                              timeout=CLI_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise CliError(f'CLI {CLI_TIMEOUT}s 타임아웃', 429)
+    elapsed = time.time() - t0
+
+    try:
+        out = json.loads(proc.stdout)
+    except Exception:
+        tail = (proc.stderr or proc.stdout or '').strip()[-400:]
+        with _cli_lock:
+            _cli_usage['errors'] += 1
+        raise CliError(f'CLI exit {proc.returncode}: {tail}', _cli_classify(tail))
+
+    usage = out.get('usage') or {}
+    with _cli_lock:
+        _cli_usage['calls'] += 1
+        _cli_usage['seconds'] += elapsed
+        _cli_usage['total_cost_usd'] += float(out.get('total_cost_usd') or 0)
+        for k in ('input_tokens', 'output_tokens',
+                  'cache_read_input_tokens', 'cache_creation_input_tokens'):
+            _cli_usage[k] += int(usage.get(k) or 0)
+        _cli_usage['web_search_requests'] += int(
+            (usage.get('server_tool_use') or {}).get('web_search_requests') or 0)
+        if out.get('is_error'):
+            _cli_usage['errors'] += 1
+
+    if out.get('is_error'):
+        msg = str(out.get('result') or out.get('subtype') or 'unknown')[:400]
+        raise CliError(f'CLI 오류: {msg}', _cli_classify(msg))
+
+    structured = out.get('structured_output')
+    text = (json.dumps(structured, ensure_ascii=False) if structured is not None
+            else str(out.get('result') or ''))
+    return SimpleNamespace(content=[SimpleNamespace(type='text', text=text)],
+                           stop_reason='end_turn', stop_details=None)
+
+
+def _print_cli_usage():
+    if REVIEW_BACKEND != 'cli' or not _cli_usage['calls'] and not _cli_usage['errors']:
+        return
+    u = _cli_usage
+    print('\n[CLI 사용량] '
+          f"호출 {u['calls']}회 (오류 {u['errors']}) · "
+          f"입력 {u['input_tokens']:,} · 캐시읽기 {u['cache_read_input_tokens']:,} · "
+          f"캐시쓰기 {u['cache_creation_input_tokens']:,} · 출력 {u['output_tokens']:,} 토큰 · "
+          f"웹검색 {u['web_search_requests']}회 · 누적 {u['seconds'] / 60:.1f}분 · "
+          f"API 환산 ${u['total_cost_usd']:.2f}")
+
+
+atexit.register(_print_cli_usage)
 
 
 # 재시도할 가치가 있는 오류 — 429(rate limit), 5xx/529(overloaded), 네트워크.
@@ -2400,7 +2523,7 @@ def main():
 
     # SDK 기본 재시도는 2회다. 20종목을 동시 6개로 돌리면 429 가 뭉쳐서 오므로
     # 넉넉히 잡는다 (call_research 의 백오프 재시도는 이게 소진된 뒤에 붙는다).
-    client = anthropic.Anthropic(max_retries=4)
+    client = None if REVIEW_BACKEND == 'cli' else anthropic.Anthropic(max_retries=4)
 
     print(f'[{market}] 1단계 — 종목별 리서치 (동시 {RESEARCH_WORKERS}개, 웹검색, '
           f'max_tokens {RESEARCH_MAX_TOKENS:,})...')
