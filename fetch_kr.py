@@ -1,7 +1,6 @@
 # fetch_kr.py  ─  국내 주식 데이터 수집 → Firebase /v1/kr
 
 import requests, urllib3, warnings, json, re, os, sys
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -77,29 +76,32 @@ def skip(reason):
     sys.exit(0)
 
 
+# 시가총액 순위 — 네이버가 2026-09 에 finance.naver.com/sise/sise_market_sum 을
+# Next.js 클라이언트 렌더링으로 바꿔 HTML 에서 표(table.type_2)가 사라졌다.
+# 예외 없이 0종목이 되어 KR 수집이 2026-09-10 이후 조용히 멈춰 있었다.
+# 같은 순위를 주는 모바일 JSON API 로 대체한다. marketValue 단위는 예전 표와 같은 억원.
+MARKET_VALUE_URL       = 'https://m.stock.naver.com/api/stocks/marketValue/{}'
+MARKET_VALUE_PAGE_SIZE = 50   # 예전 HTML 한 페이지와 같은 크기 → *_PAGES 의미 유지
+
 def fetch_stock_list(market_code, pages):
+    market = {0: 'KOSPI', 1: 'KOSDAQ'}[market_code]
     results = []
     for page in range(1, pages + 1):
         try:
             r = naver_get(
-                'https://finance.naver.com/sise/sise_market_sum.nhn',
-                params={'sosok': market_code, 'page': page}
+                MARKET_VALUE_URL.format(market),
+                params={'page': page, 'pageSize': MARKET_VALUE_PAGE_SIZE}
             )
-            text = r.content.decode('euc-kr', errors='replace')
-            soup = BeautifulSoup(text, 'html.parser')
-            found = False
-            for row in soup.select('table.type_2 tr'):
-                a = row.select_one('a.tltle')
-                if not a: continue
-                code_m = re.search(r'code=(\d{6})', a['href'])
-                if not code_m: continue
-                nums = [td.text.strip().replace(',', '') for td in row.select('td.number')]
-                mktcap = int(nums[4]) if len(nums) > 4 and nums[4].isdigit() else 0
-                results.append((code_m.group(1), a.text.strip(), mktcap))
-                found = True
-            if not found: break
+            stocks = r.json().get('stocks') or []
+            for st in stocks:
+                code = st.get('itemCode', '')
+                if not re.fullmatch(r'\d{6}', code): continue
+                mv = str(st.get('marketValue', '')).replace(',', '')
+                mktcap = int(mv) if mv.isdigit() else 0
+                results.append((code, st.get('stockName', '').strip(), mktcap))
+            if not stocks: break
         except Exception as e:
-            print(f'  [WARN] page {page}: {e}')
+            print(f'  [WARN] {market} page {page}: {e}')
             break   # 호스트가 응답하지 않는 상태에서 남은 페이지를 더 두드릴 이유가 없다
     seen, unique = set(), []
     for code, name, mktcap in results:
