@@ -68,11 +68,15 @@ jobs:
         continue-on-error: true
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 구독 토큰(Claude Code CLI) 경로 — auto_review.yml 과 같다 (2026-09-29 전환).
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          REVIEW_BACKEND: cli
         run: |
           markets=$(python pop_review_requests.py)
           if [ -z "$markets" ]; then exit 0; fi
           echo "수동 리뷰 갱신 요청:$markets"
+          # 요청이 있을 때만 설치한다 — 5분 수집이 매번 npm 설치를 기다리지 않게.
+          npm install -g @anthropic-ai/claude-code >/dev/null && claude --version
           for m in $markets; do
             echo "=================== $m (수동 요청) ==================="
             python generate_review.py --market "$m" --force \
