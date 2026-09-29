@@ -119,12 +119,53 @@ raw = yf.download(
 )
 
 if hasattr(raw, 'columns') and hasattr(raw.columns, 'levels'):
-    close_prices = raw['Close']
+    close_prices = raw['Close'].copy()
 else:
     close_prices = raw[['Close']].rename(columns={'Close': ticker_list[0]}) if 'Close' in raw.columns else raw
 
 close_prices.columns = [str(c) for c in close_prices.columns]
 print(f'  다운로드 완료 ({time.time()-t0:.0f}s)')
+
+# ── 2-1. 마지막 거래일 종가 공백 메우기 ────────────────────────────────────────
+# 야후가 마감된 날의 일봉에 거래량은 주면서 종가만 NaN 으로 줄 때가 있다
+# (2026-09-28: 장 마감 후 몇 시간이 지나도 대부분 종목 종가 NaN). 그러면 그날이
+# 커버리지 80% 에 못 미쳐 유효 날짜에서 빠지고, 화면이 전 거래일에 멈춘다.
+# 거래량은 있는데 종가가 없는 '마감된' 날만, 같은 날 1시간봉의 마지막 종가로 채운다.
+# (auto_adjust=True 라 시가도 종가를 따라 NaN 이 된다 — 거래량으로 판단한다.)
+# (공식 종가와 몇 센트 차이가 날 수 있다 — 야후가 일봉을 채우면 다음 수집에서 교체된다.)
+def _fill_last_close():
+    if not (hasattr(raw, 'columns') and hasattr(raw.columns, 'levels')):
+        return
+    last = close_prices.index[-1]
+    now_et = pd.Timestamp.now(tz='America/New_York')
+    if last.date() == now_et.date() and now_et.hour * 60 + now_et.minute < 16 * 60 + 15:
+        return                                   # 오늘 장이 아직 안 끝났다
+    closes = close_prices.loc[last]
+    volumes = raw['Volume'].loc[last]
+    missing = [t for t in closes.index if pd.isna(closes[t]) and (volumes.get(t) or 0) > 0]
+    if len(missing) < len(closes) * 0.2:
+        return                                   # 드문 개별 공백은 원래 로직에 맡긴다
+    print(f'  [NOTE] {last.date()} 일봉 종가 공백 {len(missing)}종목 — 1시간봉으로 보충')
+    try:
+        hourly = yf.download(missing, period='5d', interval='1h',
+                             auto_adjust=True, progress=False, threads=True)['Close']
+    except Exception as e:
+        print(f'  [WARN] 1시간봉 조회 실패: {e}')
+        return
+    if not hasattr(hourly, 'columns'):
+        hourly = hourly.to_frame(missing[0])
+    hourly.columns = [str(c) for c in hourly.columns]
+    day = hourly[hourly.index.tz_convert('America/New_York').date == last.date()]
+    filled = 0
+    for t in missing:
+        if t in day.columns:
+            s = day[t].dropna()
+            if len(s):
+                close_prices.loc[last, t] = float(s.iloc[-1])
+                filled += 1
+    print(f'  [NOTE] {filled}/{len(missing)}종목 보충 완료')
+
+_fill_last_close()
 
 # ── 3. 시가총액 (Nasdaq API에서 받은 경우 생략) ────────────────────────────────
 if not mktcap_map:
@@ -190,6 +231,9 @@ for sym, name, key in [('^GSPC', 'S&P 500', 'sp500'), ('^NDX', 'NASDAQ 100', 'nd
     try:
         hist = yf.Ticker(sym).history(period=IDX_PERIOD)
         hist = hist[hist['Close'].notna() & (hist['Close'] > 0)]
+        # 지수는 종목 기준일(valid_dates[0])까지만 본다. 종목 종가가 늦게 들어온 날
+        # 지수만 하루 앞서 가면 '09-25 종목 등락 + 09-28 지수'처럼 섞여 게시된다.
+        hist = hist[[d.strftime('%Y-%m-%d') <= valid_dates[0] for d in hist.index]]
         if len(hist) >= 2:
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
