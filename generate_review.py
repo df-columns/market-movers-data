@@ -1121,7 +1121,7 @@ def _overview_structured(client, prompt):
         "\n"
         "flow: 리포트 1면에 실릴 본문이자 뉴스 화면의 '시장의 흐름' 글이다.\n"
         "  lines 는 표 위 좁은 칸에 눌러 쓴 것이라 딱딱하다. 여기는 이어지는 글로 쓴다.\n"
-        f"  분량 {FLOW_MAX_CHARS - 60}~{FLOW_MAX_CHARS}자. 이건 상한이 아니라 하한이 있는\n"
+        f"  분량 {FLOW_MAX_CHARS - 60}~{FLOW_MAX_CHARS}자. 하한도 지켜야 하는\n"
         "  지시다 — 할 말 다 했다고 600자에서 끊지 마라. 1면이 이 글로 채워지므로\n"
         "  짧으면 종이 아래가 빈 채로 인쇄된다. 분량이 남으면 인과의 다음 단계나\n"
         "  내일 확인할 지점을 더 써라.\n"
@@ -1301,6 +1301,108 @@ def _finish_overview(lines, final, text):
     return lines
 
 
+# 총평·흐름 글이 날마다 "오늘 증시를 움직인 것은 A가 아니라 B였다" 로 시작했다.
+# 프롬프트 자체가 "~가 아니라 ~를 써라" 식 대비 문장투성이라 모델이 그 틀을
+# 그대로 따라 쓴 것이다. 금지 규칙만으론 다른 틀 하나로 수렴하므로, 첫 문장의
+# 구성을 날짜·시장별로 돌려가며 지정한다.
+OPENING_STYLES = [
+    '지수 수치로 연다 — 지수의 종가·등락률을 먼저 쓰고 같은 문장에 원인을 붙인다. '
+    '(예: "코스피가 1.2% 내린 2,580선에 마감했다. 미 국채 10년물 금리가 4.6%를 넘어선 영향이다.")',
+    '원인 사건으로 연다 — 오늘 시장에 작용한 사건·지표를 주어로 세운다. '
+    '(예: "미국 8월 CPI가 예상치를 웃돌면서 아시아 증시 전반에 매도세가 번졌다.")',
+    '업종 명암으로 연다 — 가장 크게 오른 업종과 내린 업종을 한 문장에 나란히 쓴다. '
+    '(예: "반도체가 3% 넘게 오른 반면 2차전지는 2% 가까이 밀렸다.")',
+    '수급 주체로 연다 — 외국인·기관 등 매매 주체의 움직임과 규모를 먼저 쓴다. '
+    '(예: "외국인이 유가증권시장에서 7천억원 넘게 순매도하며 지수를 끌어내렸다.")',
+    '가격 변수로 연다 — 환율·금리·유가·원자재 중 오늘 가장 크게 움직인 값과 그 폭을 먼저 쓴다. '
+    '(예: "원·달러 환율이 1,400원을 돌파하며 수출주와 내수주의 방향이 갈렸다.")',
+]
+
+STYLE_RULES = """━━━ 문체: 뉴스 브리핑체 (lines·flow 공통) ━━━
+- 통신사 시황 기사처럼 쓴다. 사실과 수치를 앞에, 해석은 뒤에. 평서문 '~했다/~다'로 끝낸다.
+- 칼럼·에세이 투의 수사를 쓰지 마라. 특히 다음 틀은 금지한다:
+  · "A가 아니라 B였다", "A보다 B였다", "A이 아닌 B" 식의 대비 도입
+  · "오늘 시장을 움직인 것은 ~", "주인공은 ~", "키워드는 ~", "한마디로 ~"
+  · "~라는 두 개의 가격", "~의 하루였다" 같은 비유·요약형 문장
+  · 독자에게 말을 거는 구어체("~인 셈이다", "~라고 봐야 한다", "눈여겨볼 만하다")
+- 같은 문장 틀을 두 번 이상 쓰지 마라. 문장 길이와 주어를 바꿔 가며 써라.
+- 첫 문장 구성(lines 1번과 flow 첫 문장 모두 적용, 둘은 서로 다른 문장으로):
+  {opening}
+  그날 자료로 이 구성이 어색하면 사실이 가장 큰 쪽으로 열되, 위 금지 틀은 쓰지 마라."""
+
+# 대비 도입이 다시 나오면 로그로라도 드러나게 한다(재생성은 비용이 커서 하지 않음).
+_CONTRAST_OPENING = re.compile(r'(아니라|아닌|보다는?)\s.{1,40}?(였|이었)다')
+
+
+def _opening_style(market, date):
+    """날짜·시장마다 다른 첫 문장 구성을 고른다. 연속된 날은 항상 다른 구성이 나온다."""
+    try:
+        day = datetime.strptime(str(date)[:10], '%Y-%m-%d').toordinal()
+    except ValueError:
+        day = sum(map(ord, str(date)))
+    shift = {'kr': 0, 'us': 2, 'jp': 4, 'cn': 1}.get(market, 3)
+    return OPENING_STYLES[(day + shift) % len(OPENING_STYLES)]
+
+
+def _warn_contrast_opening(label, text):
+    first = re.split(r'(?<=다\.)\s*', (text or '').strip(), maxsplit=1)[0]
+    if _CONTRAST_OPENING.search(first):
+        print(f'  [WARN] {label} 첫 문장이 대비형 도입이다: {first[:80]}')
+
+
+# ── ETF 자금흐름 맥락 (032 '주도주 찾기'가 Firebase /etf/summary 에 매일 올리는 요약) ──
+# 1~3개월 단위 ETF 점수(모멘텀·이익 추정치·자금 유입)로 본 시장 국면과 섹터 흐름.
+# 없거나 오래됐으면(7일 초과) 빈 문자열 — 총평은 지금까지와 똑같이 동작한다.
+ETF_MAX_AGE_DAYS = 7
+ETF_MARKET = {'kr': 'KR', 'us': 'US'}
+ETF_COUNTRY = {'jp': '일본', 'cn': '중국'}
+
+
+def etf_context(market, date):
+    try:
+        s = fb_ref('/etf/summary').get()
+    except Exception as e:
+        print(f'  [NOTE] ETF 요약 읽기 실패({type(e).__name__}) — 생략')
+        return ''
+    if not isinstance(s, dict) or not s.get('asof'):
+        return ''
+    try:
+        age = (datetime.strptime(date, '%Y-%m-%d') - datetime.strptime(s['asof'], '%Y-%m-%d')).days
+    except ValueError:
+        return ''
+    if age > ETF_MAX_AGE_DAYS or age < -1:
+        return ''
+
+    def fmt(x):
+        bits = [f"{x.get('market', '')} {x.get('sector', '')}".strip(), f"점수 {x.get('score')}/12"]
+        if x.get('change_1m') is not None:
+            bits.append(f"1개월 {x['change_1m']:+}")
+        if x.get('aum_chg_1m') is not None:
+            bits.append(f"AUM {x['aum_chg_1m']:+}%")
+        return ' '.join(bits)
+
+    def pick(rows):
+        rows = rows or []
+        if market in ETF_MARKET:
+            rows = [r for r in rows if r.get('market') == ETF_MARKET[market]]
+        elif market in ETF_COUNTRY:
+            rows = [r for r in rows if ETF_COUNTRY[market] in (r.get('sector') or '')]
+        return rows[:5]
+
+    rg = s.get('regime') or {}
+    lines = [f"[참고: ETF 자금흐름 — 1~3개월 단위, 기준일 {s['asof']}]"]
+    if rg.get('now'):
+        lines.append(f"- 시장 국면: {rg['now']} (대표 ETF 평균 총점 주식 {rg.get('equity')} vs 채권 {rg.get('bond')}, "
+                     f"1개월 전 {rg.get('one_month_ago', '?')} → 지금 {rg['now']})")
+    for key, label in (('strong', '돈이 몰리는 섹터(세 항목 모두 평균 이상)'),
+                       ('rising', '관심이 커지는 섹터(1개월 점수 상승)'),
+                       ('falling', '관심이 빠지는 섹터(1개월 점수 하락)')):
+        rows = pick(s.get(key))
+        if rows:
+            lines.append(f"- {label}: " + ' / '.join(fmt(r) for r in rows))
+    return '\n'.join(lines) if len(lines) > 1 else ''
+
+
 def build_overview(client, market, date, idx_ctx, top, bot):
     def brief(rows):
         if not rows:
@@ -1318,10 +1420,18 @@ def build_overview(client, market, date, idx_ctx, top, bot):
             for r in rows)
 
     lang = SEARCH_LANG.get(market, '현지어')
+    etf_ctx = etf_context(market, date)
+    if etf_ctx:
+        print(f'  [ETF] 자금흐름 맥락 {etf_ctx.count(chr(10))}줄 반영')
+    etf_block = (f"""
+{etf_ctx}
+위 ETF 자금흐름은 1~3개월 단위의 큰 흐름이다. 오늘의 축이 이 흐름과 같은 방향인지(추세의 연장) 반대인지(되돌림·순환)
+판단에 도움이 되면 3) 또는 6)에서 한 번만 짚어라. 오늘 등락의 '원인'으로 쓰지는 마라. 관련이 없으면 언급하지 마라.
+""" if etf_ctx else '')
     prompt = f"""{date} {MARKET_NAME.get(market, market)} 증시 데일리 브리핑의 '시황 총평'을 작성하라.
 
 시장 지수: {idx_ctx}
-
+{etf_block}
 [상승 {len(top)}종목]
 {brief(top)}
 
@@ -1332,8 +1442,8 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 
 ━━━ 이 총평의 역할 ━━━
 리포트 표에는 종목별 배경이 두 줄씩 들어간다. 그건 이미 있으니 여기서 반복하지 마라.
-여기서 필요한 건 개별 종목 나열이 아니라 **시장 전체를 관통하는 흐름과 그 원인**이다.
-"무엇이 올랐다"가 아니라 "왜 그것이 올랐고 그래서 무엇이 갈렸는가"를 써라.
+여기서 필요한 건 **시장 전체를 관통하는 흐름과 그 원인**이다. 종목을 나열하지 마라.
+"무엇이 올랐다"에서 멈추지 말고 "왜 올랐고 그래서 무엇이 갈렸는가"까지 써라.
 
 ━━━ 인과관계를 반드시 드러내라 (가장 중요) ━━━
 오늘 시장을 움직인 축이 있으면 그 축의 **원인**을 한 줄 배정해 설명하라.
@@ -1366,7 +1476,9 @@ def build_overview(client, market, date, idx_ctx, top, bot):
 - ★ 무엇을 검색하겠다거나 무엇을 확인했다는 진행 상황을 답변에 쓰지 마라.
   ("I'll search for…", "검색해 보겠다", "확인한 결과에 따르면" 등 금지)
   첫 글자부터 바로 시황 문장으로 시작하라.
-- 전부 한국어로 작성하라. 영어 문장을 섞지 마라(고유명사·지표명은 예외)."""
+- 전부 한국어로 작성하라. 영어 문장을 섞지 마라(고유명사·지표명은 예외).
+
+{STYLE_RULES.format(opening=_opening_style(market, date))}"""
 
     # 매크로 원인을 찾느라 이미 웹검색을 하므로, 그때 본 출처를 같이 받아 둔다.
     # 추가 검색 비용은 없고 뉴스 목록(/news)의 2층 재료가 된다.
@@ -1376,7 +1488,9 @@ def build_overview(client, market, date, idx_ctx, top, bot):
     try:
         ov_lines, macro, flow, sectors = _overview_structured(client, prompt)
         news = {'macro': macro, 'flow': flow, 'sectors': sectors}
+        _warn_contrast_opening('흐름', flow)
         if ov_lines:
+            _warn_contrast_opening('총평', ov_lines[0])
             return _finish_overview(ov_lines, None, ''), news
         print('  [NOTE] 총평 구조화 출력 실패 — 평문으로 재시도')
     except Exception as e:
@@ -1395,6 +1509,8 @@ def build_overview(client, market, date, idx_ctx, top, bot):
         )
         text = ''.join(b.text for b in final.content if b.type == 'text')
         lines = [_clean_overview_line(ln) for ln in text.strip().splitlines()]
+        if lines:
+            _warn_contrast_opening('총평', lines[0])
         return _finish_overview(lines, final, text), news
     except Exception as e:
         print(f'  [WARN] 총평 생성 실패: {e}')
